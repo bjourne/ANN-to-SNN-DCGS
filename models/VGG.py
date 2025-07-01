@@ -1,7 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
 from timm.models.registry import register_model
+from torch.nn import Module
 
 cfg = {
     'VGG11': [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
@@ -10,20 +13,20 @@ cfg = {
     'VGG19': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 256, 'M', 512, 512, 512, 512, 'M', 512, 512, 512, 512, 'M']
 }
 
-class ClassifierHead(nn.Module):
+class ClassifierHead(Module):
     def __init__(self, in_features, num_classes, drop_rate=0.0):
         super(ClassifierHead, self).__init__()
-        self.global_pool = nn.AdaptiveAvgPool2d(1) 
-        self.drop = nn.Dropout(drop_rate)          
-        self.fc = nn.Linear(in_features, num_classes) 
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
+        self.drop = nn.Dropout(drop_rate)
+        self.fc = nn.Linear(in_features, num_classes)
 
     def forward(self, x):
-        x = self.global_pool(x).view(x.size(0), -1) 
+        x = self.global_pool(x).view(x.size(0), -1)
         x = self.drop(x)
         return self.fc(x)
 
-    
-class ConvMlp(nn.Module):
+
+class ConvMlp(Module):
     def __init__(self, in_features=512, out_features=4096, kernel_size=7, mlp_ratio=1.0, drop_rate=0.5):
         super(ConvMlp, self).__init__()
         mid_features = int(out_features * mlp_ratio)
@@ -44,7 +47,7 @@ class ConvMlp(nn.Module):
         return x
 
 
-class VGG(nn.Module):
+class VGG(Module):
     def __init__(self, cfg_name, num_classes=1000, dropout=0.5, use_bn=True):
         super(VGG, self).__init__()
         self.features = self._make_layers(cfg[cfg_name], use_bn)

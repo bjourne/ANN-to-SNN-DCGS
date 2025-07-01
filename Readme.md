@@ -1,3 +1,6 @@
+Paper: https://arxiv.org/abs/2503.00301
+
+
 # 1. Structure Overview
 
 The file directory structure should be
