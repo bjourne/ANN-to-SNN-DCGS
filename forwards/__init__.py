@@ -5,7 +5,8 @@ from utils import *
 import torch
 import copy
 import numpy as np
-def forward_replace(args,model):
+
+def forward_replace(args, model):
     if args.task == 'classification':
         if args.mode == 'test_ann':
             return model
@@ -127,7 +128,7 @@ def forward_replace(args,model):
     else:
         print("still not support this task for val")
         exit(0)
-        
+
 def forward_snn_diff_leaky_rate_s(self, x):
     output = []
     output.append(self.init_forward(torch.zeros_like(x)))
@@ -147,7 +148,7 @@ def forward_snn_diff_leaky_rate_m(self, x):
     for i in range(2,self.T+1):
         mul /= self.tau
         out[i]*=mul
-    return decodeoutput(out)        
+    return decodeoutput(out)
 
 def forward_snn_diff_rate_s(self, x):
     output = []
@@ -166,7 +167,7 @@ def forward_snn_diff_rate_m(self, x):
     out = self.init_forward(x)
     out = self.expand(out)
     return decodeoutput(out)
-        
+
 def forward_snn_leaky_rate_s(self, x):
     output = []
     mul = 1
@@ -210,7 +211,7 @@ def add_dimention(x, T):
 def add_dimention_diff(x, T):
     x.unsqueeze_(0)
     x = x.repeat(T+1, 1, 1, 1, 1)
-    x[0] = 0 
+    x[0] = 0
     x[2:] = 0
     return x
 

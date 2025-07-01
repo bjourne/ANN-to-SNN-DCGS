@@ -60,6 +60,4 @@ def modelpool(args):
         elif args.model_name == 'retinanet_resnet50_fpn_v2':
             return retinanet_resnet50_fpn_v2(num_classes=num_classes)
     else:
-        print("still not support this task")
-        exit(0)
-        
+        assert False

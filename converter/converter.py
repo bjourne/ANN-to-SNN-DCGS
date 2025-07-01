@@ -24,8 +24,8 @@ class Converter(nn.Module):
             return snn_fused
         else:
             return snn
-    
-    
+
+
     @staticmethod
     def replace_by_maxpool_neuron(model,neuron=maxpool_neuron,T=8,step_mode='s',coding_type='diff_rate'):
         for name, module in model._modules.items():
@@ -33,8 +33,8 @@ class Converter(nn.Module):
                 model._modules[name] = neuron(maxpool=module,T=T,step_mode=step_mode,coding_type=coding_type)
             elif hasattr(module, "_modules"):
                 model._modules[name] = Converter.replace_by_maxpool_neuron(module,neuron,T,step_mode=step_mode,coding_type=coding_type)
-        return model 
-    
+        return model
+
     @staticmethod
     def change_maxpool_before_relu(model):
         for name, module in model._modules.items():
@@ -48,7 +48,7 @@ class Converter(nn.Module):
                 model._modules[name] = nn.Sequential(model._modules[name],tmp)
                 print("change a maxpool before relu")
         return model
-    
+
     @staticmethod
     def replace_by_neuron(model, neuron, args, step_mode='s', T=0):
         if neuron=='IF':
@@ -79,7 +79,7 @@ class Converter(nn.Module):
             return Converter.replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_diff_line, num_thresholds = args.num_thresholds,args=args)
         else:
             print("Unsupported Neuron Name")
-    
+
     @staticmethod
     def replace_relu_by_IF(model,step_mode,T,neuron,args):
         for name, module in model._modules.items():
@@ -91,8 +91,8 @@ class Converter(nn.Module):
                 model._modules[name] = neuron(T=T, thresh=thre, step_mode=step_mode)
             elif hasattr(module, "_modules"):
                 model._modules[name] = Converter.replace_relu_by_IF(module,step_mode,T,neuron,args=args)
-        return model 
-    
+        return model
+
     @staticmethod
     def replace_relu_by_LIF(model,step_mode,T,tau,neuron,args):
         for name, module in model._modules.items():
@@ -105,11 +105,11 @@ class Converter(nn.Module):
             elif hasattr(module, "_modules"):
                 model._modules[name] = Converter.replace_relu_by_LIF(module,step_mode,T,tau,neuron,args=args)
         return model
-    
+
     @staticmethod
     def replace_relu_by_MTH(model,step_mode,T,neuron,num_thresholds,args):
         for name, module in model._modules.items():
-            if module.__class__.__name__.lower()=="relu":# 没有用，用于不统计直接转
+            if module.__class__.__name__.lower()=="relu":
                 model._modules[name] = neuron(T=T, thresh=1.0, step_mode=step_mode,num_thresholds=num_thresholds)
             elif args.model_name in ['fcos_resnet50_fpn', 'retinanet_resnet50_fpn', 'retinanet_resnet50_fpn_v2']:
                 if "threhook" in module.__class__.__name__.lower() and module.out.__class__.__name__.lower() in ['linear','conv2d']:
@@ -135,7 +135,6 @@ class Converter(nn.Module):
                 if "threhook" in module.__class__.__name__.lower():
                     scale = 8
                     thre = model._modules[name].scale
-                    # print(thre,module.out.__class__.__name__.lower())
                     thre = thre*(thre>=0).float()*scale
                     if module.out.__class__.__name__.lower()=='myat':
                         thre2 = model._modules[name].scale2
@@ -155,7 +154,7 @@ class Converter(nn.Module):
                 elif hasattr(module, "_modules"):
                     model._modules[name] = Converter.replace_relu_by_MTH(module,step_mode,T,neuron,num_thresholds,args)
         return model
-    
+
     @staticmethod
     def fuse(fx_model: torch.fx.GraphModule, fuse_flag: bool = True) -> torch.fx.GraphModule:
         def matches_module_pattern(pattern: Iterable[Type], node: fx.Node, modules: Dict[str, Any]) -> bool:

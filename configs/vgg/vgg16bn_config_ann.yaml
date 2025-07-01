@@ -1,7 +1,7 @@
 # Model configuration
 model_name: vgg16_bn
 load_name: "../models/qe-conversion/vgg16/vgg16_bn_imagenet.pth"
-mode: test_ann                  # Operation mode: test_ann, get_threshold, test_snn, train_snn
+mode: train_snn                  # Operation mode: test_ann, get_threshold, test_snn, train_snn
 save_name: checkpoint           # Name for saving the model
 
 # Threshold configuration
@@ -16,7 +16,7 @@ coding_type: rate               # Coding type: rate or diff
 task: classification            # Task type: classification or others
 
 # Dataset configuration
-dataset: imagenet               # Dataset name
+dataset: cifar100               # Dataset name
 dataset_path: "../data"         # Path to the dataset
 batchsize: 200                  # Batch size for training or testing
 
