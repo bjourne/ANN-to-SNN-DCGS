@@ -27,7 +27,13 @@ class ClassifierHead(Module):
 
 
 class ConvMlp(Module):
-    def __init__(self, in_features=512, out_features=4096, kernel_size=7, mlp_ratio=1.0, drop_rate=0.5):
+    def __init__(
+        self, in_features=512,
+        out_features=4096,
+        kernel_size=7,
+        mlp_ratio=1.0,
+        drop_rate=0.5
+    ):
         super(ConvMlp, self).__init__()
         mid_features = int(out_features * mlp_ratio)
         self.fc1 = nn.Conv2d(in_features, mid_features, kernel_size=kernel_size, bias=True)

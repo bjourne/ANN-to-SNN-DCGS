@@ -8,10 +8,10 @@ import torch.distributed as dist
 from argparse import ArgumentParser
 from utils import seed_all, get_logger, get_modules
 from datasets import datapool
-from models import modelpool
 from train_val_functions import valpool
 from converter import Threshold_Getter,Converter
 from forwards import forward_replace
+from models.VGG import *
 
 def get_args():
     parser = ArgumentParser(description='Conversion Frame')
@@ -115,7 +115,10 @@ def get_args():
     return args, device
 
 def load_model_from_dict(model, model_path, device):
-    state_dict = torch.load(os.path.join(model_path), map_location=torch.device('cpu'))
+    state_dict = torch.load(
+        os.path.join(model_path),
+        map_location=torch.device('cpu')
+    )
     for model_key in ['model','module']:
         if model_key in state_dict:
             state_dict = state_dict[model_key]
@@ -130,6 +133,64 @@ def load_model_from_model(model, model_path, device):
     model = torch.load(model_path)
     return model
 
+def modelpool(args):
+    if args.task == 'classification':
+        if args.dataset == 'imagenet':
+            num_classes = 1000
+        elif args.dataset == 'cifar100':
+            num_classes = 100
+        elif args.dataset == 'cifar10':
+            num_classes = 10
+        else:
+            print("still not support this dataset")
+            exit(0)
+        if args.model_name == 'vgg16_bn':
+            return vgg16(num_classes=num_classes)
+        elif args.model_name == 'vgg16_wobn':
+            return vgg16_wobn(num_classes=num_classes)
+        elif args.model_name == 'vgg19_bn':
+            return vgg19(num_classes=num_classes)
+        elif args.model_name == 'resnet18':
+            return resnet18(num_classes=num_classes)
+        elif args.model_name == 'resnet20':
+            return resnet20(num_classes=num_classes)
+        elif args.model_name == 'resnet34':
+            return resnet34(num_classes=num_classes)
+        elif args.model_name == 'resnet50':
+            return resnet34(num_classes=num_classes)
+        elif args.model_name == 'resnet152':
+            return resnet34(num_classes=num_classes)
+        elif args.model_name == 'vit_small':
+            return vit_small_patch16_224(num_classes=num_classes)
+        elif args.model_name == 'vit_base':
+            return vit_base_patch16_224(num_classes=num_classes)
+        elif args.model_name == 'vit_large':
+            return vit_large_patch16_224(num_classes=num_classes)
+        elif args.model_name == 'eva02_tiny':
+            return eva02_tiny_patch14_336(num_classes=num_classes)
+        elif args.model_name == 'eva02_small':
+            return eva02_small_patch14_336(num_classes=num_classes)
+        elif args.model_name == 'eva02_base':
+            return eva02_base_patch14_448(num_classes=num_classes)
+        elif args.model_name == 'eva02_large':
+            return eva02_large_patch14_448(num_classes=num_classes)
+        else:
+            print("still not support this model")
+            exit(0)
+    elif args.task == 'object_detection':
+        if args.dataset == 'coco':
+            num_classes = 91
+        else:
+            print("error dataset")
+        if args.model_name == 'fcos_resnet50_fpn':
+            return fcos_resnet50_fpn(num_classes=num_classes)
+        elif args.model_name == 'retinanet_resnet50_fpn':
+            return retinanet_resnet50_fpn(num_classes=num_classes)
+        elif args.model_name == 'retinanet_resnet50_fpn_v2':
+            return retinanet_resnet50_fpn_v2(num_classes=num_classes)
+    else:
+        assert False
+
 def main():
     args, device = get_args()
     seed_all(args.seed)
@@ -137,6 +198,9 @@ def main():
 
     train_loader, test_loader = datapool(args)
     model = modelpool(args)
+
+    print(model)
+
     get_modules(111, model)
 
     print("* Parameters")
@@ -196,7 +260,7 @@ def main():
     elif args.mode == 'train_snn':
         print("Train SNN Mode")
     else:
-        print("Not Support This Mode")
+        assert False
     if args.distributed:
         dist.destroy_process_group()
 
