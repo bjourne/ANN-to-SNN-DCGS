@@ -11,20 +11,6 @@ from neurons import *
 from torch.nn import *
 from utils import MyatSequential
 
-def change_maxpool_before_relu(model):
-    for name, module in model._modules.items():
-        cname = module.__class__.__name__.lower()
-        if hasattr(module, "_modules"):
-            model._modules[name] = change_maxpool_before_relu(module)
-        if 'relu' in cname or ("threhook" in cname and module.out.__class__.__name__.lower()=='relu'):
-            tmp_name = name
-        if 'maxpool' in cname:
-            tmp = model._modules[tmp_name]
-            model._modules[tmp_name] = nn.Identity()
-            model._modules[name] = nn.Sequential(model._modules[name],tmp)
-            print("change a maxpool before relu")
-    return model
-
 def replace_relu_by_IF(model,step_mode,T,neuron):
     for name, module in model._modules.items():
         cname = module.__class__.__name__.lower()
@@ -38,6 +24,64 @@ def replace_relu_by_IF(model,step_mode,T,neuron):
             model._modules[name] = replace_relu_by_IF(module,step_mode,T,neuron)
     return model
 
+def replace_relu_by_LIF(model,step_mode,T,tau,neuron):
+    for name, module in model._modules.items():
+        if module.__class__.__name__.lower()=="relu":
+            model._modules[name] = neuron(T=T, thresh=1.0, tau = tau, step_mode=step_mode)
+        elif "threhook" in module.__class__.__name__.lower() and module.out.__class__.__name__.lower()=='relu':
+            thre = model._modules[name].scale
+            thre = thre*(thre>=0).float()
+            model._modules[name] = neuron(T=T, thresh=thre, tau = tau, step_mode=step_mode)
+        elif hasattr(module, "_modules"):
+            model._modules[name] = replace_relu_by_LIF(module,step_mode,T,tau,neuron)
+    return model
+
+def replace_relu_by_MTH(model,step_mode,T,neuron,num_thresholds,args):
+    for name, module in model._modules.items():
+        cname = module.__class__.__name__.lower()
+        if cname == "relu":
+            model._modules[name] = neuron(T=T, thresh=1.0, step_mode=step_mode,num_thresholds=num_thresholds)
+        elif args.model_name in ['fcos_resnet50_fpn', 'retinanet_resnet50_fpn', 'retinanet_resnet50_fpn_v2']:
+            if "threhook" in module.__class__.__name__.lower() and module.out.__class__.__name__.lower() in ['linear','conv2d']:
+                model._modules[name] = module.out
+            elif "threhook" in module.__class__.__name__.lower() and module.out.__class__.__name__.lower()=='relu':
+                thre = model._modules[name].scale
+                thre = thre*(thre>=0).float()
+                model._modules[name] = neuron(T=T, thresh=thre, step_mode=step_mode,num_thresholds=num_thresholds)
+            elif "threhook" in module.__class__.__name__.lower():
+                model._modules[name] = exp_comp_neuron(module.out,T=args.time,step_mode=args.step_mode,coding_type=args.coding_type)
+            elif hasattr(module, "_modules"):
+                model._modules[name] = Converter.replace_relu_by_MTH(module,step_mode,T,neuron,num_thresholds,args)
+        elif args.model_name in ["my_vgg16", 'vgg16', 'vgg16_bn', 'vgg19', 'vgg19_bn', 'resnet18', 'resnet20', 'resnet34', 'resnet50', 'resnet101', 'resnet152']:
+            if "threhook" in module.__class__.__name__.lower() and module.out.__class__.__name__.lower()=='relu':
+                thre = model._modules[name].scale
+                thre = thre*(thre>=0).float()
+                model._modules[name] = neuron(T=T, thresh=thre, step_mode=step_mode,num_thresholds=num_thresholds)
+            elif "threhook" in module.__class__.__name__.lower() and module.out.__class__.__name__.lower() in ['linear','conv2d']:
+                model._modules[name] = module.out
+            elif hasattr(module, "_modules"):
+                model._modules[name] = Converter.replace_relu_by_MTH(module,step_mode,T,neuron,num_thresholds,args)
+        else:
+            if "threhook" in module.__class__.__name__.lower():
+                scale = 8
+                thre = model._modules[name].scale
+                thre = thre*(thre>=0).float()*scale
+                if module.out.__class__.__name__.lower()=='myat':
+                    thre2 = model._modules[name].scale2
+                    thre2 = thre2*(thre2>=0).float()*scale
+                    model._modules[name] = MyatSequential(neuron(T=T, thresh=thre, step_mode=step_mode,num_thresholds=num_thresholds),
+                                                          neuron(T=T, thresh=thre2, step_mode=step_mode,num_thresholds=num_thresholds),
+                                                          AtNeuron(T=args.time,step_mode=args.step_mode,coding_type=args.coding_type))
+                elif module.out.__class__.__name__.lower() in ['linear','conv2d']:
+                    model._modules[name] = nn.Sequential(neuron(T=T, thresh=thre, step_mode=step_mode,num_thresholds=num_thresholds),
+                                                         module.out)
+                else:
+                    model._modules[name] = exp_comp_neuron(module.out,T=args.time,step_mode=args.step_mode,coding_type=args.coding_type)
+            elif module.__class__.__name__.lower() == 'mymul':
+                model._modules[name] = MulNeuron(T=args.time,step_mode=args.step_mode,coding_type=args.coding_type)
+            elif hasattr(module, "_modules"):
+                model._modules[name] = replace_relu_by_MTH(module,step_mode,T,neuron,num_thresholds,args)
+    return model
 
 def replace_by_neuron(model, neuron, args, step_mode='s', T=0):
     if neuron=='IF':
@@ -51,21 +95,21 @@ def replace_by_neuron(model, neuron, args, step_mode='s', T=0):
     elif neuron == 'IF_diff_line':
         return replace_relu_by_IF(model, step_mode, T, IF_diff_line)
     elif neuron=='LIF':
-        return Converter.replace_relu_by_LIF(model, step_mode=step_mode, T=T, tau=args.tau, neuron=LIF,args=args)
+        return replace_relu_by_LIF(model, step_mode=step_mode, T=T, tau=args.tau, neuron=LIF,args=args)
     elif neuron=='LIF_with_neg':
-        return Converter.replace_relu_by_LIF(model, step_mode=step_mode, T=T, tau=args.tau, neuron=LIF_with_neg,args=args)
+        return replace_relu_by_LIF(model, step_mode=step_mode, T=T, tau=args.tau, neuron=LIF_with_neg,args=args)
     elif neuron=='LIF_diff':
-        return Converter.replace_relu_by_LIF(model, step_mode=step_mode, T=T, tau=args.tau, neuron=LIF_diff,args=args)
+        return replace_relu_by_LIF(model, step_mode=step_mode, T=T, tau=args.tau, neuron=LIF_diff,args=args)
     elif neuron=='MTH':
-        return Converter.replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH, num_thresholds = args.num_thresholds,args=args)
+        return replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH, num_thresholds = args.num_thresholds,args=args)
     elif neuron=='MTH_with_neg':
-        return Converter.replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_with_neg, num_thresholds = args.num_thresholds,args=args)
+        return replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_with_neg, num_thresholds = args.num_thresholds,args=args)
     elif neuron=='MTH_diff':
-        return Converter.replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_diff, num_thresholds = args.num_thresholds,args=args)
+        return replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_diff, num_thresholds = args.num_thresholds,args=args)
     elif neuron=='MTH_with_neg_line':
-        return Converter.replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_with_neg_line, num_thresholds = args.num_thresholds,args=args)
+        return replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_with_neg_line, num_thresholds = args.num_thresholds,args=args)
     elif neuron=='MTH_diff_line':
-        return Converter.replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_diff_line, num_thresholds = args.num_thresholds,args=args)
+        return replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_diff_line, num_thresholds = args.num_thresholds,args=args)
     assert False
 
 class Converter(Module):
@@ -92,71 +136,6 @@ class Converter(Module):
         else:
             return snn
 
-
-
-
-
-    @staticmethod
-    def replace_relu_by_LIF(model,step_mode,T,tau,neuron,args):
-        for name, module in model._modules.items():
-            if module.__class__.__name__.lower()=="relu":
-                model._modules[name] = neuron(T=T, thresh=1.0, tau = tau, step_mode=step_mode)
-            elif "threhook" in module.__class__.__name__.lower() and module.out.__class__.__name__.lower()=='relu':
-                thre = model._modules[name].scale
-                thre = thre*(thre>=0).float()
-                model._modules[name] = neuron(T=T, thresh=thre, tau = tau, step_mode=step_mode)
-            elif hasattr(module, "_modules"):
-                model._modules[name] = Converter.replace_relu_by_LIF(module,step_mode,T,tau,neuron,args=args)
-        return model
-
-    @staticmethod
-    def replace_relu_by_MTH(model,step_mode,T,neuron,num_thresholds,args):
-        for name, module in model._modules.items():
-            if module.__class__.__name__.lower()=="relu":
-                model._modules[name] = neuron(T=T, thresh=1.0, step_mode=step_mode,num_thresholds=num_thresholds)
-            elif args.model_name in ['fcos_resnet50_fpn', 'retinanet_resnet50_fpn', 'retinanet_resnet50_fpn_v2']:
-                if "threhook" in module.__class__.__name__.lower() and module.out.__class__.__name__.lower() in ['linear','conv2d']:
-                    model._modules[name] = module.out
-                elif "threhook" in module.__class__.__name__.lower() and module.out.__class__.__name__.lower()=='relu':
-                    thre = model._modules[name].scale
-                    thre = thre*(thre>=0).float()
-                    model._modules[name] = neuron(T=T, thresh=thre, step_mode=step_mode,num_thresholds=num_thresholds)
-                elif "threhook" in module.__class__.__name__.lower():
-                    model._modules[name] = exp_comp_neuron(module.out,T=args.time,step_mode=args.step_mode,coding_type=args.coding_type)
-                elif hasattr(module, "_modules"):
-                    model._modules[name] = Converter.replace_relu_by_MTH(module,step_mode,T,neuron,num_thresholds,args)
-            elif args.model_name in ['vgg16', 'vgg16_bn', 'vgg19', 'vgg19_bn', 'resnet18', 'resnet20', 'resnet34', 'resnet50', 'resnet101', 'resnet152']:
-                if "threhook" in module.__class__.__name__.lower() and module.out.__class__.__name__.lower()=='relu':
-                    thre = model._modules[name].scale
-                    thre = thre*(thre>=0).float()
-                    model._modules[name] = neuron(T=T, thresh=thre, step_mode=step_mode,num_thresholds=num_thresholds)
-                elif "threhook" in module.__class__.__name__.lower() and module.out.__class__.__name__.lower() in ['linear','conv2d']:
-                    model._modules[name] = module.out
-                elif hasattr(module, "_modules"):
-                    model._modules[name] = Converter.replace_relu_by_MTH(module,step_mode,T,neuron,num_thresholds,args)
-            else:
-                if "threhook" in module.__class__.__name__.lower():
-                    scale = 8
-                    thre = model._modules[name].scale
-                    thre = thre*(thre>=0).float()*scale
-                    if module.out.__class__.__name__.lower()=='myat':
-                        thre2 = model._modules[name].scale2
-                        thre2 = thre2*(thre2>=0).float()*scale
-                        model._modules[name] = MyatSequential(neuron(T=T, thresh=thre, step_mode=step_mode,num_thresholds=num_thresholds),
-                                                            neuron(T=T, thresh=thre2, step_mode=step_mode,num_thresholds=num_thresholds),
-                                                            AtNeuron(T=args.time,step_mode=args.step_mode,coding_type=args.coding_type))
-                    elif module.out.__class__.__name__.lower() in ['linear','conv2d']:
-                        model._modules[name] = nn.Sequential(neuron(T=T, thresh=thre, step_mode=step_mode,num_thresholds=num_thresholds),
-                                                             module.out)
-                    # elif module.out.__class__.__name__.lower() in ['conv2d']:
-                    #     model._modules[name] = module.out
-                    else:
-                        model._modules[name] = exp_comp_neuron(module.out,T=args.time,step_mode=args.step_mode,coding_type=args.coding_type)
-                elif module.__class__.__name__.lower() == 'mymul':
-                    model._modules[name] = MulNeuron(T=args.time,step_mode=args.step_mode,coding_type=args.coding_type)
-                elif hasattr(module, "_modules"):
-                    model._modules[name] = Converter.replace_relu_by_MTH(module,step_mode,T,neuron,num_thresholds,args)
-        return model
 
     @staticmethod
     def fuse(

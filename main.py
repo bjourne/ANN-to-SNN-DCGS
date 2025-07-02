@@ -1,3 +1,5 @@
+# I think we only need step_mode=="s"
+
 import os
 import yaml
 import torch
@@ -6,7 +8,6 @@ import torch.distributed as dist
 
 from argparse import ArgumentParser
 from converter import Converter, Threshold_Getter
-from converter.converter import change_maxpool_before_relu
 from converter.threshold_getter import replace_nonlinear_by_hook, save_model
 from copy import deepcopy
 from datasets.getdataloader import GetCifar10, GetCifar100
@@ -16,6 +17,7 @@ from neurons.nonlinear_neuron import maxpool_neuron
 from torch.nn import (
     BatchNorm2d, Conv2d, Linear,
     Flatten,
+    Identity,
     MaxPool2d,
     ReLU,
     Sequential
@@ -35,6 +37,20 @@ def replace_modules(mod, match_fun, new_fun):
         if match_fun(submod):
             setattr(mod, name, new_fun(submod))
         replace_modules(submod, match_fun, new_fun)
+
+def change_maxpool_before_relu(model):
+    for name, module in model._modules.items():
+        cname = module.__class__.__name__.lower()
+        if hasattr(module, "_modules"):
+            change_maxpool_before_relu(module)
+        if 'relu' in cname or ("threhook" in cname and module.out.__class__.__name__.lower()=='relu'):
+            tmp_name = name
+        if 'maxpool' in cname:
+            tmp = model._modules[tmp_name]
+            model._modules[tmp_name] = Identity()
+            model._modules[name] = Sequential(model._modules[name],tmp)
+            print("change a maxpool before relu")
+    #return model
 
 def replace_by_maxpool_neuron(
     model,
@@ -109,19 +125,6 @@ def val_ann_classfication(model, l_te, device):
         final_acc = 100 * correct / total
     return final_acc
 
-# def valpool(args):
-#     assert args.task == 'classification'
-#     if args.mode == 'test_ann':
-#         return val_ann_classfication
-#     elif args.mode == 'get_threshold':
-#         return val_ann_classfication
-#     elif args.mode == 'test_snn':
-#         if args.sop:
-#             return val_snn_classfication_with_sop
-#         else:
-#             return val_snn_classfication
-#     assert False
-
 def get_args():
     parser = ArgumentParser(description='Conversion Frame')
 
@@ -178,7 +181,7 @@ def get_args():
     parser.add_argument(
         '--neuron_name', '-neuron',
         choices=[
-            'IF', 'IF_with_neg', 'IF_diff', 'IF_line','IF_diff_line'
+            'IF', 'IF_with_neg', 'IF_diff', 'IF_line','IF_diff_line',
             'LIF', 'LIF_with_neg', 'LIF_diff',
             'MTH', 'MTH_with_neg', 'MTH_diff', 'MTH_line','MTH_diff_line'
         ],
@@ -203,9 +206,6 @@ def get_args():
     parser.add_argument(
         '--fuse', action='store_true', help="Whether to fuse"
     )
-
-    # Task configuration
-    parser.add_argument('--task', choices=['classification','object_detection'], default='classification', type=str, help='Task type')
 
     # Dataset configuration
     parser.add_argument(
@@ -234,12 +234,6 @@ def get_args():
     parser.add_argument(
         '--distributed', action='store_true', help="Enable distributed (default: False)"
     )
-
-    # Logger configuration
-    parser.add_argument(
-        '--logger', action='store_true', help="Enable logging (default: False)"
-    )
-    parser.add_argument('--logger_path', type=str, default="logs/log.txt", help="Path to save the log file")
 
     # Training and Testing configuration
     parser.add_argument('--seed', default=2024, type=int, help='Random seed for training initialization')
@@ -330,7 +324,6 @@ def my_vgg16(n_cls):
     return net
 
 def modelpool(args):
-    assert args.task == 'classification'
     if args.dataset == 'imagenet':
         num_classes = 1000
     elif args.dataset == 'cifar100':
@@ -380,6 +373,7 @@ def modelpool(args):
         return eva02_large_patch14_448(num_classes=num_classes)
     assert False
 
+
 def decodeoutput(x):
     out = torch.zeros_like(x[1:])
     T = x.shape[0]-1
@@ -414,9 +408,7 @@ def forward_snn_rate_m(self, x):
     out = self.expand(out)
     return out
 
-
 def forward_replace(args, model):
-    assert args.task == 'classification'
     model.coding_type = args.coding_type
     model.step_mode = args.step_mode
     model.T = args.time
@@ -479,7 +471,6 @@ def forward_replace(args, model):
 def main():
     args, device = get_args()
     seed_all(args.seed)
-    logger = get_logger(args.logger,args.logger_path)
 
     train_loader, l_te = datapool(args)
     model = modelpool(args)
@@ -509,7 +500,9 @@ def main():
         model = load_model_from_dict(model, args.load_name, device)
         model.to(device)
         model.eval()
+        print(model)
         model = change_maxpool_before_relu(model)
+        print(model)
 
         model_converter = Threshold_Getter(
             l_te,
@@ -524,7 +517,7 @@ def main():
         print("Successfully Save Model with Threshold")
     elif args.mode == 'test_snn':
         assert args.time > 0
-        model = change_maxpool_before_relu(model)
+        change_maxpool_before_relu(model)
         replace_by_maxpool_neuron(
             model,
             args.time,
