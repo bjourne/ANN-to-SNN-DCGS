@@ -35,6 +35,17 @@ def set_voltagehook_under_graph(fx_model, mode='Max', momentum=0.1):
     fx_model.recompile()
     return fx_model
 
+@staticmethod
+def load_model(model_path, mode_fx, code_path=None,model=None):
+    if mode_fx:
+        return Threshold_Getter.load_fx_model(model_path+'.pt')
+    else:
+        assert model
+        return Threshold_Getter.load_module_model(model=model, model_path=model_path+'.pth')
+
+
+
+
 class Threshold_Getter(Module):
     def __init__(
         self,
@@ -85,28 +96,11 @@ class Threshold_Getter(Module):
         return model
 
     @staticmethod
-    def load_model(model_path, mode_fx, code_path=None,model=None):
-        if mode_fx:
-            return Threshold_Getter.load_fx_model(model_path+'.pt')
-        else:
-            assert model
-            return Threshold_Getter.load_module_model(model=model, model_path=model_path+'.pth')
-
-    @staticmethod
     def load_module_model(model, model_path):
         state_dict = torch.load(model_path)
         model.load_state_dict(state_dict)
         return model
 
-    @staticmethod
-    def save_fx_model(fx_model, model_path, code_path=None):
-        model_dir = os.path.dirname(model_path)
-        if model_dir and not os.path.exists(model_dir):
-            os.makedirs(model_dir)  # Create the directory if it doesn't exist
-        if code_path is not None:
-            with open(code_path, "w") as f:
-                f.write(fx_model.code)
-        torch.save(fx_model, model_path)
 
     @staticmethod
     def load_fx_model(model_path, code_path=None):
@@ -140,10 +134,15 @@ def replace_nonlinear_by_hook(model, momentum, mode, level):
             )
     return model
 
+def save_fx_model(fx_model, model_path, code_path=None):
+    if code_path is not None:
+        with open(code_path, "w") as f:
+            f.write(fx_model.code)
+    torch.save(fx_model, model_path)
 
 def save_model(model, model_path, mode_fx):
     if mode_fx:
-        return Threshold_Getter.save_fx_model(model, model_path+'.pt')
+        return save_fx_model(model, model_path+'.pt')
     else:
         torch.save(model.state_dict(), "%s.pth" % model_path)
 
@@ -211,7 +210,6 @@ class ThreHook(Module):
         mode='Max',
         momentum=0.1,
         out_layer = None,
-        # out_layer='Identitiy',
         level='layer'
     ):
         super().__init__()

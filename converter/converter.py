@@ -11,18 +11,6 @@ from neurons import *
 from torch.nn import *
 from utils import MyatSequential
 
-def replace_relu_by_IF(model,step_mode,T,neuron):
-    for name, module in model._modules.items():
-        cname = module.__class__.__name__.lower()
-        if cname == "relu":
-            model._modules[name] = neuron(T=T, thresh=1.0, step_mode=step_mode)
-        elif "threhook" in cname and module.out.__class__.__name__.lower()=='relu':
-            thre = model._modules[name].scale
-            thre = thre*(thre>=0).float()
-            model._modules[name] = neuron(T=T, thresh=thre, step_mode=step_mode)
-        elif hasattr(module, "_modules"):
-            model._modules[name] = replace_relu_by_IF(module,step_mode,T,neuron)
-    return model
 
 def replace_relu_by_LIF(model,step_mode,T,tau,neuron):
     for name, module in model._modules.items():
@@ -83,59 +71,13 @@ def replace_relu_by_MTH(model,step_mode,T,neuron,num_thresholds,args):
                 model._modules[name] = replace_relu_by_MTH(module,step_mode,T,neuron,num_thresholds,args)
     return model
 
-def replace_by_neuron(model, neuron, args, step_mode='s', T=0):
-    if neuron=='IF':
-        return replace_relu_by_IF(model, step_mode, T, IF)
-    elif neuron=='IF_with_neg':
-        return replace_relu_by_IF(model, step_mode, T, IF_with_neg)
-    elif neuron == 'IF_diff':
-        return replace_relu_by_IF(model, step_mode, T, IF_diff)
-    elif neuron == 'IF_with_neg_line':
-        return replace_relu_by_IF(model, step_mode, T, IF_with_neg_line)
-    elif neuron == 'IF_diff_line':
-        return replace_relu_by_IF(model, step_mode, T, IF_diff_line)
-    elif neuron=='LIF':
-        return replace_relu_by_LIF(model, step_mode=step_mode, T=T, tau=args.tau, neuron=LIF,args=args)
-    elif neuron=='LIF_with_neg':
-        return replace_relu_by_LIF(model, step_mode=step_mode, T=T, tau=args.tau, neuron=LIF_with_neg,args=args)
-    elif neuron=='LIF_diff':
-        return replace_relu_by_LIF(model, step_mode=step_mode, T=T, tau=args.tau, neuron=LIF_diff,args=args)
-    elif neuron=='MTH':
-        return replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH, num_thresholds = args.num_thresholds,args=args)
-    elif neuron=='MTH_with_neg':
-        return replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_with_neg, num_thresholds = args.num_thresholds,args=args)
-    elif neuron=='MTH_diff':
-        return replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_diff, num_thresholds = args.num_thresholds,args=args)
-    elif neuron=='MTH_with_neg_line':
-        return replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_with_neg_line, num_thresholds = args.num_thresholds,args=args)
-    elif neuron=='MTH_diff_line':
-        return replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_diff_line, num_thresholds = args.num_thresholds,args=args)
-    assert False
-
-class Converter(Module):
+class Converter:
     def __init__(self, neuron, args, T=0, step_mode='s', fuse_flag=False):
-        super().__init__()
         self.neuron = neuron
         self.fuse_flag = fuse_flag
         self.step_mode = step_mode
         self.T=T
         self.args=args
-
-    def forward(self, ann):
-        snn = replace_by_neuron(
-            ann,
-            self.neuron,
-            step_mode=self.step_mode,
-            T=self.T,
-            args=self.args
-        )
-        if self.fuse_flag:
-            snn = fx.symbolic_trace(snn)
-            snn_fused = self.fuse(snn, fuse_flag=self.fuse_flag)
-            return snn_fused
-        else:
-            return snn
-
 
     @staticmethod
     def fuse(

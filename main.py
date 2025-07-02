@@ -1,4 +1,6 @@
-# I think we only need step_mode=="s"
+# Changes:
+#
+# * No support for step_mode == "m"
 
 import os
 import yaml
@@ -8,12 +10,12 @@ import torch.distributed as dist
 
 from argparse import ArgumentParser
 from converter import Converter, Threshold_Getter
-from converter.threshold_getter import replace_nonlinear_by_hook, save_model
+from converter.threshold_getter import ThreHook, replace_nonlinear_by_hook, save_model
 from copy import deepcopy
 from datasets.getdataloader import GetCifar10, GetCifar100
 from forwards import add_dimention
 from models.VGG import *
-from neurons.nonlinear_neuron import maxpool_neuron
+from neurons.relu_neuron import ZIF
 from torch.nn import (
     BatchNorm2d, Conv2d, Linear,
     Flatten,
@@ -50,18 +52,92 @@ def change_maxpool_before_relu(model):
             model._modules[tmp_name] = Identity()
             model._modules[name] = Sequential(model._modules[name],tmp)
             print("change a maxpool before relu")
-    #return model
+
+class UniformUnpooling(Module):
+    def __init__(self, kernel_size, stride=None, padding=0):
+        super(UniformUnpooling, self).__init__()
+        self.kernel_size = kernel_size
+        self.stride = stride if stride else kernel_size
+        self.padding = padding
+
+    def forward(self, x):
+        N, C, H, W = x.size()
+        x = x.view(N, C, H, 1, W, 1)
+        x = x.repeat(1, 1, 1, self.kernel_size, 1, self.kernel_size)
+        x = x.view(N, C, H * self.kernel_size, W * self.kernel_size)
+        return x.contiguous()
+
+class MaxPoolNeuron(Module):
+    def __init__(self, maxpool, T, coding_type):
+        super(MaxPoolNeuron, self).__init__()
+        self.v = None
+        self.maxpool = maxpool
+        self.unpool = UniformUnpooling(
+            kernel_size=maxpool.kernel_size,
+            stride=maxpool.stride
+        )
+        self.coding_type = coding_type
+        if 'diff' in self.coding_type:
+            self.T = -1
+        else:
+            self.T = 0
+
+        if 'diff' in coding_type:
+            self.expand = ExpandTemporalDim(T+1)
+        else:
+            self.expand = ExpandTemporalDim(T)
+        self.merge = MergeTemporalDim()
+
+    def forward(self, x):
+        if self.maxpool.kernel_size != self.maxpool.stride:
+            return self.maxpool(x)
+        if True:
+            if 'diff' in self.coding_type:
+                if self.T==-1:
+                    self.bias = x.clone().detach()
+                    self.exp_in = x.clone().detach()
+                    bias_out = self.maxpool(x)
+                    self.exp_out = torch.zeros_like(bias_out)
+                    self.T = self.T + 1
+                    return torch.zeros_like(bias_out)
+                elif self.T==0:
+                    self.v = x.clone().detach()
+                else:
+                    self.v = self.v + x - self.bias + self.exp_in
+
+                self.exp_in = self.exp_in + (x - self.bias)/(self.T+1)
+                output = self.maxpool(self.v)
+                self.v -= self.unpool(output)
+                output = output - self.exp_out
+                self.exp_out = self.exp_out + output/(self.T+1)
+                self.T = self.T + 1
+                return output
+            else:
+                if self.T==0:
+                    self.v = x.clone().detach()
+                else:
+                    self.v = self.v + x
+                output = self.maxpool(self.v)
+                self.v -= self.unpool(output)
+                self.T = self.T + 1
+                return output
+
+    def reset(self):
+        self.v = None
+        if 'diff' in self.coding_type:
+            self.T=-1
+        else:
+            self.T=0
 
 def replace_by_maxpool_neuron(
     model,
     T,
-    step_mode,
     coding_type
 ):
     replace_modules(
         model,
         lambda m: isinstance(m, MaxPool2d),
-        lambda m: maxpool_neuron(m, T, step_mode, coding_type)
+        lambda m: MaxPoolNeuron(m, T, coding_type)
     )
 
 
@@ -79,23 +155,22 @@ def datapool(args):
 def reset(model):
     for name, module in model._modules.items():
         if hasattr(module, "_modules"):
-            model._modules[name] = reset(module)
+            reset(module)
         if hasattr(module, "reset"):
             model._modules[name].reset()
-    return model
 
-def val_snn_classfication(model, l_te, device, args=None):
+def val_snn_classfication(net, l_te, device, args=None):
     correct = 0
     total = 0
-    model.eval()
-    all_correct = [0 for i in range(model.T)]
-    all_total = [0 for i in range(model.T)]
+    net.eval()
+    all_correct = [0 for i in range(net.T)]
+    all_total = [0 for i in range(net.T)]
     with torch.no_grad():
         for bi, (xs, targets) in enumerate(l_te):
-            reset(model)
+            reset(net)
             xs = xs.to(device)
-            yhats = model(xs)
-            for i in range(model.T):
+            yhats = net(xs)
+            for i in range(net.T):
                 yhats_T = yhats[:i+1].mean(0)
                 _, predicted = yhats_T.cpu().max(1)
                 all_correct[i] += float(predicted.eq(targets).sum().item())
@@ -104,7 +179,7 @@ def val_snn_classfication(model, l_te, device, args=None):
             print(bi, 100 * all_correct[-1] / all_total[-1])
 
             per_step = ["%4.1f" % (100 * all_correct[i] / all_total[i])
-                        for i in range(model.T)]
+                        for i in range(net.T)]
             print(" ".join(per_step))
         final_acc = 100 * all_correct[-1] / all_total[-1]
     return final_acc
@@ -265,7 +340,8 @@ def get_args():
 def load_model_from_dict(model, model_path, device):
     state_dict = torch.load(
         os.path.join(model_path),
-        map_location=torch.device('cpu')
+        map_location=torch.device('cpu'),
+        weights_only = False
     )
     for model_key in ['model','module']:
         if model_key in state_dict:
@@ -409,35 +485,19 @@ def forward_snn_rate_m(self, x):
     return out
 
 def forward_replace(args, model):
+    assert args.step_mode == "s"
     model.coding_type = args.coding_type
     model.step_mode = args.step_mode
     model.T = args.time
 
     if args.coding_type=='rate':
-        if args.step_mode=='s':
-            model.init_forward = model.forward
-            model.forward = MethodType(forward_snn_rate_s, model)
-        elif args.step_mode=='m':
-            model.merge = MergeTemporalDim()
-            model.expand = ExpandTemporalDim(model.T)
-            model.init_forward = model.forward
-            model.forward = MethodType(forward_snn_rate_m, model)
-        else:
-            assert False
+        model.init_forward = model.forward
+        model.forward = MethodType(forward_snn_rate_s, model)
         return model
     elif args.coding_type=='leaky_rate':
-        if args.step_mode=='s':
-            model.tau = args.tau
-            model.init_forward = model.forward
-            model.forward = MethodType(forward_snn_leaky_rate_s, model)
-        elif args.step_mode=='m':
-            model.tau = args.tau
-            model.merge = MergeTemporalDim()
-            model.expand = ExpandTemporalDim(model.T)
-            model.init_forward = model.forward
-            model.forward = MethodType(forward_snn_leaky_rate_m, model)
-        else:
-            print("Unexpected step mode")
+        model.tau = args.tau
+        model.init_forward = model.forward
+        model.forward = MethodType(forward_snn_leaky_rate_s, model)
         return model
     elif args.coding_type=='diff_rate':
         if args.step_mode=='s':
@@ -467,6 +527,103 @@ def forward_replace(args, model):
         return model
     else:
         assert False
+
+
+class IF(Module):
+    def __init__(self, thresh):
+        super().__init__()
+        self.thresh = nn.Parameter(thresh.clone().detach(), requires_grad=True)
+
+    def reset(self):
+        self.mem = None
+
+    def forward(self, x):
+        if self.mem is None:
+            self.mem = 0.5 * self.thresh * torch.ones_like(x)
+        self.mem = self.mem + x
+        spike = (self.mem - self.thresh >= 0) * self.thresh
+        self.mem = self.mem - spike
+        return spike
+
+class IF_with_neg(Module):
+    def __init__(self, thresh=1.0):
+        super().__init__()
+        self.thresh = nn.Parameter(thresh.clone().detach(), requires_grad=True)
+
+    def reset(self):
+        self.mem = None
+
+    def forward(self, x):
+        if self.mem is None:
+            self.mem = 0.5 * self.thresh * torch.ones_like(x)
+            self.cum_out = torch.zeros_like(x)
+
+        self.mem = self.mem + x
+        pos_spk = (self.mem - self.thresh >= 0).float()
+        neg_spk = (-self.mem >= 0) * (self.cum_out>=self.thresh).float()
+        spike = self.thresh * (pos_spk - neg_spk)
+        self.cum_out = self.cum_out + spike
+        self.mem = self.mem - spike
+        return spike
+
+def replace_relu_by_IF(model, T, neuron):
+    def fix_thre_hook(m):
+        thresh = m.scale * (m.scale >= 0).float()
+        return neuron(thresh)
+    replace_modules(
+        model,
+        lambda m: isinstance(m, ThreHook) and isinstance(m.out, ReLU),
+        fix_thre_hook
+    )
+    replace_modules(
+        model,
+        lambda m: isinstance(m, ReLU),
+        lambda m: neuron(1.0)
+    )
+    return model
+
+def replace_by_neuron(model, neuron, args, step_mode='s', T=0):
+    if neuron=='IF':
+        return replace_relu_by_IF(model, T, IF)
+    elif neuron=='IF_with_neg':
+        return replace_relu_by_IF(model, T, IF_with_neg)
+    elif neuron == 'IF_diff':
+        return replace_relu_by_IF(model, step_mode, T, IF_diff)
+    elif neuron == 'IF_with_neg_line':
+        return replace_relu_by_IF(model, step_mode, T, IF_with_neg_line)
+    elif neuron == 'IF_diff_line':
+        return replace_relu_by_IF(model, step_mode, T, IF_diff_line)
+    elif neuron=='LIF':
+        return replace_relu_by_LIF(model, step_mode=step_mode, T=T, tau=args.tau, neuron=LIF,args=args)
+    elif neuron=='LIF_with_neg':
+        return replace_relu_by_LIF(model, step_mode=step_mode, T=T, tau=args.tau, neuron=LIF_with_neg,args=args)
+    elif neuron=='LIF_diff':
+        return replace_relu_by_LIF(model, step_mode=step_mode, T=T, tau=args.tau, neuron=LIF_diff,args=args)
+    elif neuron=='MTH':
+        return replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH, num_thresholds = args.num_thresholds,args=args)
+    elif neuron=='MTH_with_neg':
+        return replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_with_neg, num_thresholds = args.num_thresholds,args=args)
+    elif neuron=='MTH_diff':
+        return replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_diff, num_thresholds = args.num_thresholds,args=args)
+    elif neuron=='MTH_with_neg_line':
+        return replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_with_neg_line, num_thresholds = args.num_thresholds,args=args)
+    elif neuron=='MTH_diff_line':
+        return replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_diff_line, num_thresholds = args.num_thresholds,args=args)
+    assert False
+
+def convert_ann_to_snn(ann, neuron, args, T, fuse_flag):
+    snn = replace_by_neuron(
+        ann,
+        neuron,
+        args,
+        "s",
+        T
+    )
+    if fuse_flag:
+        snn = fx.symbolic_trace(snn)
+        snn_fused = self.fuse(snn, fuse_flag=fuse_flag)
+        return snn_fused
+    return snn
 
 def main():
     args, device = get_args()
@@ -500,11 +657,9 @@ def main():
         model = load_model_from_dict(model, args.load_name, device)
         model.to(device)
         model.eval()
-        print(model)
-        model = change_maxpool_before_relu(model)
-        print(model)
+        change_maxpool_before_relu(model)
 
-        model_converter = Threshold_Getter(
+        getter = Threshold_Getter(
             l_te,
             mode=args.threshold_mode,
             level=args.threshold_level,
@@ -512,7 +667,8 @@ def main():
             momentum=0.1,
             output_fx=args.fx
         )
-        model_with_threshold = model_converter(model)
+        print("MODEL", model)
+        model_with_threshold = getter(model)
         save_model(model_with_threshold, args.save_name, args.fx)
         print("Successfully Save Model with Threshold")
     elif args.mode == 'test_snn':
@@ -521,7 +677,6 @@ def main():
         replace_by_maxpool_neuron(
             model,
             args.time,
-            args.step_mode,
             args.coding_type
         )
         model = replace_nonlinear_by_hook(
@@ -530,17 +685,15 @@ def main():
         model = load_model_from_dict(model, args.load_name, device)
         if args.threshold_mode=="var":
             if args.neuron_name.startswith('MTH'):
-                model = Threshold_Getter.get_scale_from_var(model, T=args.time*(2**args.num_thresholds))
+                model = Threshold_Getter.get_scale_from_var(
+                    model, T=args.time*(2**args.num_thresholds))
             else:
                 model = Threshold_Getter.get_scale_from_var(model, T=args.time)
-        model_converter = Converter(
-            args.neuron_name,
-            args,
-            args.time,
-            args.step_mode,
-            args.fuse
+
+        model = convert_ann_to_snn(
+            model, args.neuron_name, args, args.time, args.fuse
         )
-        model = model_converter(model)
+
         model = forward_replace(args, model)
         model.to(device)
         model.eval()
