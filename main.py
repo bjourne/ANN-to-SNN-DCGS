@@ -8,7 +8,11 @@ import torch.distributed as dist
 from argparse import ArgumentParser
 from utils import seed_all, get_logger, get_modules
 
-from converter import Threshold_Getter,Converter
+from converter import (
+    Converter, Threshold_Getter
+)
+from converter.converter import change_maxpool_before_relu
+from converter.threshold_getter import replace_nonlinear_by_hook, save_model
 from datasets.getdataloader import GetCifar10, GetCifar100
 from forwards import forward_replace
 from models.VGG import *
@@ -35,33 +39,66 @@ def datapool(args):
         return GetCOCO(args)
     assert False
 
-def val_ann_classfication(model, test_loader, device):
+def reset(model):
+    for name, module in model._modules.items():
+        if hasattr(module, "_modules"):
+            model._modules[name] = reset(module)
+        if hasattr(module, "reset"):
+            model._modules[name].reset()
+    return model
+
+def val_snn_classfication(model, l_te, device, args=None):
+    correct = 0
+    total = 0
+    model.eval()
+    all_correct = [0 for i in range(model.T)]
+    all_total = [0 for i in range(model.T)]
+    with torch.no_grad():
+        for bi, (xs, targets) in enumerate(l_te):
+            reset(model)
+            xs = xs.to(device)
+            yhats = model(xs)
+            for i in range(model.T):
+                yhats_T = yhats[:i+1].mean(0)
+                _, predicted = yhats_T.cpu().max(1)
+                all_correct[i] += float(predicted.eq(targets).sum().item())
+                all_total[i] += float(targets.size(0))
+
+            print(bi, 100 * all_correct[-1] / all_total[-1])
+            print('ee: ' + ', '.join([str(100 * all_correct[i] / all_total[i])
+                                      for i in range(model.T)]))
+
+        final_acc = 100 * all_correct[-1] / all_total[-1]
+    return final_acc
+
+
+def val_ann_classfication(model, l_te, device):
     correct = 0
     total = 0
     model.eval()
     with torch.no_grad():
-        for batch_idx, (inputs, targets) in enumerate(test_loader):
-            inputs = inputs.to(device)
-            outputs = model(inputs)
-            _, predicted = outputs.cpu().max(1)
+        for bi, (xs, targets) in enumerate(l_te):
+            xs = xs.to(device)
+            yhats = model(xs)
+            _, predicted = yhats.cpu().max(1)
             total += float(targets.size(0))
             correct += float(predicted.eq(targets).sum().item())
-            print(batch_idx, 100 * correct / total)
+            print(bi, 100 * correct / total)
         final_acc = 100 * correct / total
     return final_acc
 
-def valpool(args):
-    assert args.task == 'classification'
-    if args.mode == 'test_ann':
-        return val_ann_classfication
-    elif args.mode == 'get_threshold':
-        return val_ann_classfication
-    elif args.mode == 'test_snn':
-        if args.sop:
-            return val_snn_classfication_with_sop
-        else:
-            return val_snn_classfication
-    assert False
+# def valpool(args):
+#     assert args.task == 'classification'
+#     if args.mode == 'test_ann':
+#         return val_ann_classfication
+#     elif args.mode == 'get_threshold':
+#         return val_ann_classfication
+#     elif args.mode == 'test_snn':
+#         if args.sop:
+#             return val_snn_classfication_with_sop
+#         else:
+#             return val_snn_classfication
+#     assert False
 
 def get_args():
     parser = ArgumentParser(description='Conversion Frame')
@@ -101,8 +138,19 @@ def get_args():
         '--threshold_mode', '-thre',
         default='99.9%', type=str, help='Threshold mode'
     )
-    parser.add_argument('--threshold_level', default='layer', choices=['layer', 'channel', 'neuron'], type=str, help='Threshold level')
-    parser.add_argument('--fx', action='store_true', help="Whether to use fx output graph")
+    parser.add_argument(
+        '--threshold_level',
+        default='layer',
+        choices = [
+            'layer', 'channel', 'neuron'
+        ],
+        type=str, help='Threshold level'
+    )
+    parser.add_argument(
+        '--fx',
+        action='store_true',
+        help="Whether to use fx output graph"
+    )
 
     # Neuron conversion configuration
     parser.add_argument(
@@ -130,7 +178,9 @@ def get_args():
         type=str,
         help='Coding type'
     )
-    parser.add_argument('--fuse', action='store_true', help="Whether to fuse")
+    parser.add_argument(
+        '--fuse', action='store_true', help="Whether to fuse"
+    )
 
     # Task configuration
     parser.add_argument('--task', choices=['classification','object_detection'], default='classification', type=str, help='Task type')
@@ -313,38 +363,36 @@ def main():
     seed_all(args.seed)
     logger = get_logger(args.logger,args.logger_path)
 
-    train_loader, test_loader = datapool(args)
+    train_loader, l_te = datapool(args)
     model = modelpool(args)
 
-    # shape = 1, 3, 32, 32
-    # summary(model, input_size = shape, device = "cpu")
-    #get_modules(111, model)
-
+    keys = [
+        "mode", "fuse", "fx",
+        "save_name", "sop", "step_mode",
+        "threshold_level", "threshold_mode", "time"
+    ]
+    pad = max(len(k) for k in keys)
     print("* Parameters")
-    print("  mode: %s" % args.mode)
+    fmt = "  %%-%ds: %%s" % pad
+    for key in keys:
+        print(fmt % (key, getattr(args, key)))
 
     # Perform training or testing based on args.mode
     if args.mode == 'test_ann':
-        print("Test ANN Mode")
         model = load_model_from_dict(model, args.load_name, device)
         print(model)
         print("Successfully load ann state dict")
         model.to(device)
         model.eval()
-        val = valpool(args)
-        print(type(test_loader))
-        val(model, test_loader, device, args)
+        val_ann_classfication(model, l_te, device)
     elif args.mode == 'get_threshold':
-        print("Get Threshold for SNN Neuron Mode")
         model = load_model_from_dict(model, args.load_name, device)
         model.to(device)
         model.eval()
-        model = Converter.change_maxpool_before_relu(model)
-
-        print(model)
+        model = change_maxpool_before_relu(model)
 
         model_converter = Threshold_Getter(
-            dataloader=test_loader,
+            l_te,
             mode=args.threshold_mode,
             level=args.threshold_level,
             device=device,
@@ -352,13 +400,17 @@ def main():
             output_fx=args.fx
         )
         model_with_threshold = model_converter(model)
-        Threshold_Getter.save_model(model=model_with_threshold, model_path=args.save_name, mode_fx=args.fx)
+        save_model(model_with_threshold, args.save_name, args.fx)
         print("Successfully Save Model with Threshold")
     elif args.mode == 'test_snn':
-        print("Test SNN Mode")
-        model = Converter.change_maxpool_before_relu(model)
-        model = Converter.replace_by_maxpool_neuron(model,T=args.time,step_mode=args.step_mode,coding_type=args.coding_type)
-        model = Threshold_Getter.replace_nonlinear_by_hook(model=model, momentum=0.1, mode=args.threshold_mode, level=args.threshold_level)
+        assert args.time > 0
+        model = change_maxpool_before_relu(model)
+        model = Converter.replace_by_maxpool_neuron(
+            model,T=args.time,step_mode=args.step_mode,coding_type=args.coding_type
+        )
+        model = replace_nonlinear_by_hook(
+            model, 0.1, args.threshold_mode, args.threshold_level
+        )
         model = load_model_from_dict(model, args.load_name, device)
         if args.threshold_mode=="var":
             if args.neuron_name.startswith('MTH'):
@@ -366,19 +418,22 @@ def main():
             else:
                 model = Threshold_Getter.get_scale_from_var(model, T=args.time)
         model_converter = Converter(
-            neuron=args.neuron_name,
-            args=args,
-            T=args.time,
-            step_mode=args.step_mode,fuse_flag=args.fuse
+            args.neuron_name,
+            args,
+            args.time,
+            args.step_mode,
+            args.fuse
         )
         model = model_converter(model)
         model = forward_replace(args, model)
         model.to(device)
         model.eval()
-        val = valpool(args)# using args.coding_type
-        val(model, test_loader, device, args)
-    elif args.mode == 'train_snn':
-        print("Train SNN Mode")
+
+        if args.sop:
+            val = val_snn_classfication_with_sop
+        else:
+            val = val_snn_classfication
+        val(model, l_te, device, args)
     else:
         assert False
     if args.distributed:

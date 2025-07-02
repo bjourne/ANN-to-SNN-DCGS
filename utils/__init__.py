@@ -123,13 +123,6 @@ class ExpandTemporalDim_dict(nn.Module):
             y_shape.extend(x_seq.shape[1:])
             y_dict[key] = x_seq.view(y_shape)
         return y_dict
-def reset(model):
-    for name, module in model._modules.items():
-        if hasattr(module, "_modules"):
-            model._modules[name] = reset(module)
-        if hasattr(module, "reset"):
-            model._modules[name].reset()
-    return model
 
 class MyAt(nn.Module):
     def __init__(self):

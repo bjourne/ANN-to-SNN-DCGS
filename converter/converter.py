@@ -5,9 +5,28 @@ from tqdm import tqdm
 from typing import Tuple
 import numpy as np
 import os
+
+
 from neurons import *
+from torch.nn import *
 from utils import MyatSequential
-class Converter(nn.Module):
+
+def change_maxpool_before_relu(model):
+    for name, module in model._modules.items():
+        cname = module.__class__.__name__.lower()
+        if hasattr(module, "_modules"):
+            model._modules[name] = change_maxpool_before_relu(module)
+        if 'relu' in cname or ("threhook" in cname and module.out.__class__.__name__.lower()=='relu'):
+            tmp_name = name
+        if 'maxpool' in cname:
+            tmp = model._modules[tmp_name]
+            model._modules[tmp_name] = nn.Identity()
+            model._modules[name] = nn.Sequential(model._modules[name],tmp)
+            print("change a maxpool before relu")
+    return model
+
+
+class Converter(Module):
     def __init__(self, neuron, args, T=0, step_mode='s', fuse_flag=False):
         super().__init__()
         self.neuron = neuron
@@ -16,8 +35,14 @@ class Converter(nn.Module):
         self.T=T
         self.args=args
 
-    def forward(self, ann: nn.Module):
-        snn = Converter.replace_by_neuron(ann,self.neuron,step_mode=self.step_mode,T=self.T,args=self.args)
+    def forward(self, ann):
+        snn = Converter.replace_by_neuron(
+            ann,
+            self.neuron,
+            step_mode=self.step_mode,
+            T=self.T,
+            args=self.args
+        )
         if self.fuse_flag:
             snn = fx.symbolic_trace(snn)
             snn_fused = self.fuse(snn, fuse_flag=self.fuse_flag)
@@ -33,21 +58,6 @@ class Converter(nn.Module):
                 model._modules[name] = neuron(maxpool=module,T=T,step_mode=step_mode,coding_type=coding_type)
             elif hasattr(module, "_modules"):
                 model._modules[name] = Converter.replace_by_maxpool_neuron(module,neuron,T,step_mode=step_mode,coding_type=coding_type)
-        return model
-
-    @staticmethod
-    def change_maxpool_before_relu(model):
-        for name, module in model._modules.items():
-            cname = module.__class__.__name__.lower()
-            if hasattr(module, "_modules"):
-                model._modules[name] = Converter.change_maxpool_before_relu(module)
-            if 'relu' in cname or ("threhook" in cname and module.out.__class__.__name__.lower()=='relu'):
-                tmp_name = name
-            if 'maxpool' in cname:
-                tmp = model._modules[tmp_name]
-                model._modules[tmp_name] = nn.Identity()
-                model._modules[name] = nn.Sequential(model._modules[name],tmp)
-                print("change a maxpool before relu")
         return model
 
     @staticmethod
@@ -157,7 +167,11 @@ class Converter(nn.Module):
         return model
 
     @staticmethod
-    def fuse(fx_model: torch.fx.GraphModule, fuse_flag: bool = True) -> torch.fx.GraphModule:
+    def fuse(
+        fx_model: torch.fx.GraphModule,
+        fuse_flag: bool = True
+    ) -> torch.fx.GraphModule:
+        print("FUSE")
         def matches_module_pattern(pattern: Iterable[Type], node: fx.Node, modules: Dict[str, Any]) -> bool:
             if len(node.args) == 0:
                 return False
@@ -185,16 +199,18 @@ class Converter(nn.Module):
                 *parent, name = target.rsplit('.', 1)
                 return parent[0] if parent else '', name
 
-            assert (isinstance(node.target, str))
+            assert isinstance(node.target, str)
             parent_name, name = parent_name(node.target)
             modules[node.target] = new_module
             setattr(modules[parent_name], name, new_module)
 
         if not fuse_flag:
             return fx_model
-        patterns = [(nn.Conv1d, nn.BatchNorm1d),
-                    (nn.Conv2d, nn.BatchNorm2d),
-                    (nn.Conv3d, nn.BatchNorm3d)]
+        patterns = [
+            (Conv1d, BatchNorm1d),
+            (Conv2d, BatchNorm2d),
+            (Conv3d, BatchNorm3d)
+        ]
 
         modules = dict(fx_model.named_modules())
 
@@ -219,18 +235,6 @@ class Converter(nn.Module):
 
     @staticmethod
     def replace_by_ifnode(fx_model: torch.fx.GraphModule) -> torch.fx.GraphModule:
-        """
-        * :ref:`API in English <Converter.replace_by_ifnode-en>`
-
-        .. _Converter.replace_by_ifnode-cn:
-
-        :param fx_model: 原模型
-        :type fx_model: torch.fx.GraphModule
-        :return: 将ReLU替换为IF脉冲神经元后的模型.
-        :rtype: torch.fx.GraphModule
-
-        ``replace_by_ifnode`` 用于将模型的ReLU替换为IF脉冲神经元。
-        """
         hook_cnt = -1
         for node in fx_model.graph.nodes:
             if node.op != 'call_module':

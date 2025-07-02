@@ -25,9 +25,9 @@ def GetCifar10(args):
     trans = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))])
     train_data = CIFAR10(args.dataset_path, train=True, transform=trans_t, download=True)
     test_data = CIFAR10(args.dataset_path, train=False, transform=trans, download=True)
-    train_dataloader = DataLoader(train_data, batch_size=args.batchsize, shuffle=True, num_workers=8)
-    test_dataloader = DataLoader(test_data, batch_size=args.batchsize, shuffle=False, num_workers=8)
-    return train_dataloader, test_dataloader
+    l_tr = DataLoader(train_data, batch_size=args.batchsize, shuffle=True, num_workers=8)
+    l_te = DataLoader(test_data, batch_size=args.batchsize, shuffle=False, num_workers=8)
+    return l_tr, l_te
 
 def GetCifar100(args):
     trans_t = Compose([
@@ -39,12 +39,12 @@ def GetCifar100(args):
                   std=[n/255. for n in [68.2,  65.4,  70.4]]),
         Cutout(n_holes=1, length=16)
     ])
-    trans = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=[n/255. for n in [129.3, 124.1, 112.4]], std=[n/255. for n in [68.2,  65.4,  70.4]])])
-    train_data = datasets.CIFAR100(args.dataset_path, train=True, transform=trans_t, download=True)
-    test_data = datasets.CIFAR100(args.dataset_path, train=False, transform=trans, download=True)
-    train_dataloader = DataLoader(train_data, batch_size=args.batchsize, shuffle=True, num_workers=8, pin_memory=True)
-    test_dataloader = DataLoader(test_data, batch_size=args.batchsize, shuffle=False, num_workers=4, pin_memory=True)
-    return train_dataloader, test_dataloader
+    trans = Compose([transforms.ToTensor(), transforms.Normalize(mean=[n/255. for n in [129.3, 124.1, 112.4]], std=[n/255. for n in [68.2,  65.4,  70.4]])])
+    train_data = CIFAR100(args.dataset_path, train=True, transform=trans_t, download=True)
+    test_data = CIFAR100(args.dataset_path, train=False, transform=trans, download=True)
+    l_tr = DataLoader(train_data, batch_size=args.batchsize, shuffle=True, num_workers=8, pin_memory=True)
+    l_te = DataLoader(test_data, batch_size=args.batchsize, shuffle=False, num_workers=4, pin_memory=True)
+    return l_tr, l_te
 
 
 def create_dataloader(dataset, batch_size, shuffle, num_workers, distributed):
@@ -99,15 +99,15 @@ def GetImageNet(args):
 
     if args.mode in ['train_snn']:
         train_data = datasets.ImageFolder(root=os.path.join(args.dataset_path, 'train'), transform=trans)
-        train_dataloader = create_dataloader(train_data, args.batchsize, shuffle=True, num_workers=8, distributed=args.distributed)
+        l_tr = create_dataloader(train_data, args.batchsize, shuffle=True, num_workers=8, distributed=args.distributed)
     else:
-        train_dataloader = None
+        l_tr = None
 
     test_data = datasets.ImageFolder(root=os.path.join(args.dataset_path, 'val'), transform=trans)
-    test_dataloader = create_dataloader(test_data, args.batchsize, shuffle=False, num_workers=2, distributed=args.distributed)
+    l_te = create_dataloader(test_data, args.batchsize, shuffle=False, num_workers=2, distributed=args.distributed)
 
 
-    return train_dataloader, test_dataloader
+    return l_tr, l_te
 
 from torchvision.datasets import CocoDetection
 class ComposeTransforms:

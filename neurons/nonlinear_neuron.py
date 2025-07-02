@@ -13,14 +13,19 @@ class UniformUnpooling(nn.Module):
 
     def forward(self, x):
         N, C, H, W = x.size()
-        # 使用重复和reshape来扩展特征图
         x = x.view(N, C, H, 1, W, 1)
         x = x.repeat(1, 1, 1, self.kernel_size, 1, self.kernel_size)
         x = x.view(N, C, H * self.kernel_size, W * self.kernel_size)
         return x.contiguous()
 
 class maxpool_neuron(nn.Module):
-    def __init__(self,maxpool,T=8,step_mode='s',coding_type='diff_rate'):
+    def __init__(
+        self,
+        maxpool,
+        T=8,
+        step_mode='s',
+        coding_type='diff_rate'
+    ):
         super(maxpool_neuron,self).__init__()
         self.v = None
         self.maxpool = maxpool
@@ -39,7 +44,7 @@ class maxpool_neuron(nn.Module):
         else:
             self.expand = ExpandTemporalDim(T)
         self.merge = MergeTemporalDim()
-        
+
     def forward(self, x):
         if self.maxpool.kernel_size!=self.maxpool.stride:
             return self.maxpool(x)
@@ -56,7 +61,7 @@ class maxpool_neuron(nn.Module):
                     self.v = x.clone().detach()
                 else:
                     self.v = self.v + x - self.bias + self.exp_in
-                    
+
                 self.exp_in = self.exp_in + (x - self.bias)/(self.T+1)
                 output = self.maxpool(self.v)
                 self.v -= self.unpool(output)
@@ -66,14 +71,14 @@ class maxpool_neuron(nn.Module):
                 return output
             else:
                 if self.T==0:
-                    self.v = x.clone.detach()
+                    self.v = x.clone().detach()
                 else:
                     self.v = self.v + x
                 output = self.maxpool(self.v)
                 self.v -= self.unpool(output)
                 self.T = self.T + 1
                 return output
-            
+
         else:
             x = self.expand(x)
             output_pot = []
@@ -85,7 +90,7 @@ class maxpool_neuron(nn.Module):
                 exp_in = x[0].clone().detach()
                 exp_out = torch.zeros_like(bias_out)
                 for t in range(self.T):
-                    v = v + x[t+1] - bias + exp_in 
+                    v = v + x[t+1] - bias + exp_in
                     exp_in = exp_in + (x[t+1] - bias)/(t+1)
                     output = self.maxpool(v)
                     v -= self.unpool(output)
@@ -97,13 +102,13 @@ class maxpool_neuron(nn.Module):
             else:
                 v = torch.zeros_like(x[0])
                 for t in range(self.T):
-                    v = v + x[t] 
+                    v = v + x[t]
                     output = self.maxpool(v)
                     v -= self.unpool(output)
                     output_pot.append(output)
                 out = torch.stack(output_pot,dim=0)
                 return self.merge(out)
-        
+
     def reset(self):
         self.v = None
         if self.step_mode=='s':
@@ -192,7 +197,7 @@ class exp_comp_neuron(nn.Module):
                 self.T=-1
             else:
                 self.T=0
-        
+
 class AtNeuron(nn.Module):
     def __init__(self,T=8,step_mode='s',coding_type='diff_rate'):
         super(AtNeuron, self).__init__()
@@ -282,7 +287,7 @@ class AtNeuron(nn.Module):
                     output_pot.append(output)
                 out = torch.stack(output_pot,dim=0)
                 return self.merge(out)
-            
+
     def reset(self):# Reset the accumulator
         self.tot_a = None
         self.tot_b = None
@@ -292,7 +297,7 @@ class AtNeuron(nn.Module):
                 self.T=-1
             else:
                 self.T=0
-                
+
 class MulNeuron(nn.Module):
     def __init__(self,T=8,step_mode='s',coding_type='diff_rate'):
         super(MulNeuron, self).__init__()
@@ -357,7 +362,7 @@ class MulNeuron(nn.Module):
                 x_v = torch.zeros_like(x[0])
                 y_v = torch.zeros_like(y[0])
                 output_pot.append(torch.zeros_like(x[0]*y[0]))
-                
+
                 for t in range(self.T):
                     if t==0:
                         output = x[t+1]*y[t+1]
@@ -390,7 +395,7 @@ class MulNeuron(nn.Module):
                     output_pot.append(output)
                 out = torch.stack(output_pot,dim=0)
                 return self.merge(out)
-            
+
     def reset(self):# Reset the accumulator
         self.tot_a = None
         self.tot_b = None

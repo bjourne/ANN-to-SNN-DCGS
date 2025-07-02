@@ -7,6 +7,7 @@ import copy
 import numpy as np
 
 def forward_replace(args, model):
+    assert args.task == 'classification'
     if args.task == 'classification':
         if args.mode == 'test_ann':
             return model
@@ -77,57 +78,6 @@ def forward_replace(args, model):
                 return model
             else:
                 print("Unexpected coding_type")
-    elif args.task == 'object_detection':
-        if args.mode == 'test_ann':
-            return model
-        elif args.mode == 'get_threshold':
-            return model
-        elif args.mode == 'test_snn':
-            model.coding_type = args.coding_type
-            model.step_mode = args.step_mode
-            model.backbone.coding_type = args.coding_type
-            model.backbone.step_mode = args.step_mode
-            model.head.coding_type = args.coding_type
-            model.head.step_mode = args.step_mode
-            if args.coding_type=='rate':
-                if args.step_mode=='s':
-                    pass
-                elif args.step_mode=='m':
-                    model.backbone.T=args.time
-                    model.backbone.merge = MergeTemporalDim()
-                    model.backbone.init_forward = model.backbone.forward
-                    model.backbone.forward = types.MethodType(forward_snn_rate_m2, model.backbone)
-                    model.head.T=args.time
-                    model.head.expand = ExpandTemporalDim_dict(model.head.T)
-                    model.head.init_forward = model.head.forward
-                    model.head.forward = types.MethodType(forward_snn_rate_m3, model.head)
-                    model.T=args.time
-                    model.forward = model.forward_snn
-                else:
-                    print("Unexpected step mode")
-                return model
-            elif args.coding_type=='diff_rate':
-                if args.step_mode=='s':
-                    pass
-                elif args.step_mode=='m':
-                    model.backbone.T=args.time
-                    model.backbone.merge = MergeTemporalDim()
-                    model.backbone.init_forward = model.backbone.forward
-                    model.backbone.forward = types.MethodType(forward_snn_diff_rate_m2, model.backbone)
-                    model.head.T=args.time
-                    model.head.expand = ExpandTemporalDim_dict(model.head.T+1)
-                    model.head.init_forward = model.head.forward
-                    model.head.forward = types.MethodType(forward_snn_diff_rate_m3, model.head)
-                    model.T=args.time
-                    model.forward = model.forward_snn
-                else:
-                    print("Unexpected step mode")
-                return model
-            else:
-                print("Unexpected coding_type")
-    else:
-        print("still not support this task for val")
-        exit(0)
 
 def forward_snn_diff_leaky_rate_s(self, x):
     output = []

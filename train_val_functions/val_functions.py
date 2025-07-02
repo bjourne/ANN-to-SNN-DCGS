@@ -3,30 +3,6 @@ from utils import reset
 from statics import SOPMonitor
 from tqdm import tqdm
 
-def val_snn_classfication(model, test_loader, device, args=None):
-    correct = 0
-    total = 0
-    model.eval()
-    all_correct = [0 for i in range(model.T)]
-    all_total = [0 for i in range(model.T)]
-    with torch.no_grad():
-        for batch_idx, (inputs, targets) in enumerate((test_loader)):
-            reset(model)
-            inputs = inputs.to(device)
-            outputs = model(inputs)
-
-            # 准确率
-            for i in range(model.T):
-                outputs_T = outputs[:i+1].mean(0)
-                _, predicted = outputs_T.cpu().max(1)
-                all_correct[i] += float(predicted.eq(targets).sum().item())
-                all_total[i] += float(targets.size(0))
-
-            print('批次：' , batch_idx, ' 最终准确率：', 100 * all_correct[-1] / all_total[-1])
-            print('平均准确率: ' + ', '.join([str(100 * all_correct[i] / all_total[i]) for i in range(model.T)]))
-
-        final_acc = 100 * all_correct[-1] / all_total[-1]
-    return final_acc
 
 
 def val_snn_classfication_with_sop(model, test_loader, device, args=None):
