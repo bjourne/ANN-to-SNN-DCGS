@@ -1,4 +1,3 @@
-import argparse
 import os
 import yaml
 import torch
@@ -6,16 +5,14 @@ import torch.nn as nn
 import torch.distributed as dist
 
 from argparse import ArgumentParser
-from utils import seed_all, get_logger, get_modules
-
-from converter import (
-    Converter, Threshold_Getter
-)
+from converter import Converter, Threshold_Getter
 from converter.converter import change_maxpool_before_relu
 from converter.threshold_getter import replace_nonlinear_by_hook, save_model
+from copy import deepcopy
 from datasets.getdataloader import GetCifar10, GetCifar100
-from forwards import forward_replace
+from forwards import add_dimention
 from models.VGG import *
+from neurons.nonlinear_neuron import maxpool_neuron
 from torch.nn import (
     BatchNorm2d, Conv2d, Linear,
     Flatten,
@@ -27,6 +24,30 @@ from torch.nn.init import (
     constant_, kaiming_normal_, normal_, uniform_, zeros_
 )
 from torchinfo import summary
+from types import MethodType
+from utils import (
+    MergeTemporalDim, ExpandTemporalDim,
+    seed_all, get_logger, get_modules
+)
+
+def replace_modules(mod, match_fun, new_fun):
+    for name, submod in mod.named_children():
+        if match_fun(submod):
+            setattr(mod, name, new_fun(submod))
+        replace_modules(submod, match_fun, new_fun)
+
+def replace_by_maxpool_neuron(
+    model,
+    T,
+    step_mode,
+    coding_type
+):
+    replace_modules(
+        model,
+        lambda m: isinstance(m, MaxPool2d),
+        lambda m: maxpool_neuron(m, T, step_mode, coding_type)
+    )
+
 
 def datapool(args):
     if args.dataset == 'cifar10':
@@ -65,9 +86,10 @@ def val_snn_classfication(model, l_te, device, args=None):
                 all_total[i] += float(targets.size(0))
 
             print(bi, 100 * all_correct[-1] / all_total[-1])
-            print('ee: ' + ', '.join([str(100 * all_correct[i] / all_total[i])
-                                      for i in range(model.T)]))
 
+            per_step = ["%4.1f" % (100 * all_correct[i] / all_total[i])
+                        for i in range(model.T)]
+            print(" ".join(per_step))
         final_acc = 100 * all_correct[-1] / all_total[-1]
     return final_acc
 
@@ -358,6 +380,102 @@ def modelpool(args):
         return eva02_large_patch14_448(num_classes=num_classes)
     assert False
 
+def decodeoutput(x):
+    out = torch.zeros_like(x[1:])
+    T = x.shape[0]-1
+    exp_in = x[0].clone().detach()
+    for t in range(T):
+        out[t]= exp_in + x[t+1] - x[0]
+        exp_in = exp_in + (x[t+1] - x[0])/(t+1)
+    return out
+
+def forward_snn_rate_s(net, x):
+    output = []
+    for i in range(net.T):
+        tmp = net.init_forward(deepcopy(x))
+        output.append(deepcopy(tmp))
+    return torch.stack(output, dim=0)
+
+def forward_snn_diff_rate_s(net, x):
+    output = []
+    tmp = net.init_forward(torch.zeros_like(x))
+    output.append(deepcopy(tmp))
+    tmp = net.init_forward(x)
+    output.append(deepcopy(tmp))
+    for i in range(net.T-1):
+        tmp = net.init_forward(torch.zeros_like(x))
+        output.append(deepcopy(tmp))
+    return decodeoutput(torch.stack(output, dim=0))
+
+def forward_snn_rate_m(self, x):
+    x = add_dimention(x, self.T)
+    x = self.merge(x)
+    out = self.init_forward(x)
+    out = self.expand(out)
+    return out
+
+
+def forward_replace(args, model):
+    assert args.task == 'classification'
+    model.coding_type = args.coding_type
+    model.step_mode = args.step_mode
+    model.T = args.time
+
+    if args.coding_type=='rate':
+        if args.step_mode=='s':
+            model.init_forward = model.forward
+            model.forward = MethodType(forward_snn_rate_s, model)
+        elif args.step_mode=='m':
+            model.merge = MergeTemporalDim()
+            model.expand = ExpandTemporalDim(model.T)
+            model.init_forward = model.forward
+            model.forward = MethodType(forward_snn_rate_m, model)
+        else:
+            assert False
+        return model
+    elif args.coding_type=='leaky_rate':
+        if args.step_mode=='s':
+            model.tau = args.tau
+            model.init_forward = model.forward
+            model.forward = MethodType(forward_snn_leaky_rate_s, model)
+        elif args.step_mode=='m':
+            model.tau = args.tau
+            model.merge = MergeTemporalDim()
+            model.expand = ExpandTemporalDim(model.T)
+            model.init_forward = model.forward
+            model.forward = MethodType(forward_snn_leaky_rate_m, model)
+        else:
+            print("Unexpected step mode")
+        return model
+    elif args.coding_type=='diff_rate':
+        if args.step_mode=='s':
+            model.init_forward = model.forward
+            model.forward = MethodType(forward_snn_diff_rate_s, model)
+        elif args.step_mode=='m':
+            model.merge = MergeTemporalDim()
+            model.expand = ExpandTemporalDim(model.T+1)
+            model.init_forward = model.forward
+            model.forward = MethodType(forward_snn_diff_rate_m, model)
+        else:
+            print("Unexpected step mode")
+        return model
+    elif args.coding_type=='diff_leaky_rate':
+        if args.step_mode=='s':
+            model.tau = args.tau
+            model.init_forward = model.forward
+            model.forward = MethodType(forward_snn_diff_leaky_rate_s, model)
+        elif args.step_mode=='m':
+            model.tau = args.tau
+            model.merge = MergeTemporalDim()
+            model.expand = ExpandTemporalDim(model.T)
+            model.init_forward = model.forward
+            model.forward = MethodType(forward_snn_diff_leaky_rate_m, model)
+        else:
+            print("Unexpected step mode")
+        return model
+    else:
+        assert False
+
 def main():
     args, device = get_args()
     seed_all(args.seed)
@@ -367,7 +485,9 @@ def main():
     model = modelpool(args)
 
     keys = [
-        "mode", "fuse", "fx",
+        "fuse", "fx",
+        "coding_type",
+        "mode", "neuron_name",
         "save_name", "sop", "step_mode",
         "threshold_level", "threshold_mode", "time"
     ]
@@ -405,8 +525,11 @@ def main():
     elif args.mode == 'test_snn':
         assert args.time > 0
         model = change_maxpool_before_relu(model)
-        model = Converter.replace_by_maxpool_neuron(
-            model,T=args.time,step_mode=args.step_mode,coding_type=args.coding_type
+        replace_by_maxpool_neuron(
+            model,
+            args.time,
+            args.step_mode,
+            args.coding_type
         )
         model = replace_nonlinear_by_hook(
             model, 0.1, args.threshold_mode, args.threshold_level

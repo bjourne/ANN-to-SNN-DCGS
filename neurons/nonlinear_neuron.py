@@ -2,9 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+
+from torch.nn import Module
 from utils import MergeTemporalDim, ExpandTemporalDim
 
-class UniformUnpooling(nn.Module):
+class UniformUnpooling(Module):
     def __init__(self, kernel_size, stride=None, padding=0):
         super(UniformUnpooling, self).__init__()
         self.kernel_size = kernel_size
@@ -18,7 +20,7 @@ class UniformUnpooling(nn.Module):
         x = x.view(N, C, H * self.kernel_size, W * self.kernel_size)
         return x.contiguous()
 
-class maxpool_neuron(nn.Module):
+class maxpool_neuron(Module):
     def __init__(
         self,
         maxpool,
@@ -29,7 +31,10 @@ class maxpool_neuron(nn.Module):
         super(maxpool_neuron,self).__init__()
         self.v = None
         self.maxpool = maxpool
-        self.unpool = UniformUnpooling(kernel_size=maxpool.kernel_size,stride=maxpool.stride)
+        self.unpool = UniformUnpooling(
+            kernel_size=maxpool.kernel_size,
+            stride=maxpool.stride
+        )
         self.step_mode = step_mode
         self.coding_type = coding_type
         if self.step_mode=='s':

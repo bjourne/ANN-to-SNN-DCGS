@@ -25,6 +25,48 @@ def change_maxpool_before_relu(model):
             print("change a maxpool before relu")
     return model
 
+def replace_relu_by_IF(model,step_mode,T,neuron):
+    for name, module in model._modules.items():
+        cname = module.__class__.__name__.lower()
+        if cname == "relu":
+            model._modules[name] = neuron(T=T, thresh=1.0, step_mode=step_mode)
+        elif "threhook" in cname and module.out.__class__.__name__.lower()=='relu':
+            thre = model._modules[name].scale
+            thre = thre*(thre>=0).float()
+            model._modules[name] = neuron(T=T, thresh=thre, step_mode=step_mode)
+        elif hasattr(module, "_modules"):
+            model._modules[name] = replace_relu_by_IF(module,step_mode,T,neuron)
+    return model
+
+
+def replace_by_neuron(model, neuron, args, step_mode='s', T=0):
+    if neuron=='IF':
+        return replace_relu_by_IF(model, step_mode, T, IF)
+    elif neuron=='IF_with_neg':
+        return replace_relu_by_IF(model, step_mode, T, IF_with_neg)
+    elif neuron == 'IF_diff':
+        return replace_relu_by_IF(model, step_mode, T, IF_diff)
+    elif neuron == 'IF_with_neg_line':
+        return replace_relu_by_IF(model, step_mode, T, IF_with_neg_line)
+    elif neuron == 'IF_diff_line':
+        return replace_relu_by_IF(model, step_mode, T, IF_diff_line)
+    elif neuron=='LIF':
+        return Converter.replace_relu_by_LIF(model, step_mode=step_mode, T=T, tau=args.tau, neuron=LIF,args=args)
+    elif neuron=='LIF_with_neg':
+        return Converter.replace_relu_by_LIF(model, step_mode=step_mode, T=T, tau=args.tau, neuron=LIF_with_neg,args=args)
+    elif neuron=='LIF_diff':
+        return Converter.replace_relu_by_LIF(model, step_mode=step_mode, T=T, tau=args.tau, neuron=LIF_diff,args=args)
+    elif neuron=='MTH':
+        return Converter.replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH, num_thresholds = args.num_thresholds,args=args)
+    elif neuron=='MTH_with_neg':
+        return Converter.replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_with_neg, num_thresholds = args.num_thresholds,args=args)
+    elif neuron=='MTH_diff':
+        return Converter.replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_diff, num_thresholds = args.num_thresholds,args=args)
+    elif neuron=='MTH_with_neg_line':
+        return Converter.replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_with_neg_line, num_thresholds = args.num_thresholds,args=args)
+    elif neuron=='MTH_diff_line':
+        return Converter.replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_diff_line, num_thresholds = args.num_thresholds,args=args)
+    assert False
 
 class Converter(Module):
     def __init__(self, neuron, args, T=0, step_mode='s', fuse_flag=False):
@@ -36,7 +78,7 @@ class Converter(Module):
         self.args=args
 
     def forward(self, ann):
-        snn = Converter.replace_by_neuron(
+        snn = replace_by_neuron(
             ann,
             self.neuron,
             step_mode=self.step_mode,
@@ -51,58 +93,8 @@ class Converter(Module):
             return snn
 
 
-    @staticmethod
-    def replace_by_maxpool_neuron(model,neuron=maxpool_neuron,T=8,step_mode='s',coding_type='diff_rate'):
-        for name, module in model._modules.items():
-            if "maxpool" in module.__class__.__name__.lower():
-                model._modules[name] = neuron(maxpool=module,T=T,step_mode=step_mode,coding_type=coding_type)
-            elif hasattr(module, "_modules"):
-                model._modules[name] = Converter.replace_by_maxpool_neuron(module,neuron,T,step_mode=step_mode,coding_type=coding_type)
-        return model
 
-    @staticmethod
-    def replace_by_neuron(model, neuron, args, step_mode='s', T=0):
-        if neuron=='IF':
-            return Converter.replace_relu_by_IF(model, step_mode=step_mode, T=T, neuron = IF,args=args)
-        elif neuron=='IF_with_neg':
-            return Converter.replace_relu_by_IF(model, step_mode=step_mode, T=T, neuron = IF_with_neg,args=args)
-        elif neuron == 'IF_diff':
-            return Converter.replace_relu_by_IF(model, step_mode=step_mode, T=T, neuron = IF_diff,args=args)
-        elif neuron == 'IF_with_neg_line':
-            return Converter.replace_relu_by_IF(model, step_mode=step_mode, T=T, neuron = IF_with_neg_line,args=args)
-        elif neuron == 'IF_diff_line':
-            return Converter.replace_relu_by_IF(model, step_mode=step_mode, T=T, neuron = IF_diff_line,args=args)
-        elif neuron=='LIF':
-            return Converter.replace_relu_by_LIF(model, step_mode=step_mode, T=T, tau=args.tau, neuron=LIF,args=args)
-        elif neuron=='LIF_with_neg':
-            return Converter.replace_relu_by_LIF(model, step_mode=step_mode, T=T, tau=args.tau, neuron=LIF_with_neg,args=args)
-        elif neuron=='LIF_diff':
-            return Converter.replace_relu_by_LIF(model, step_mode=step_mode, T=T, tau=args.tau, neuron=LIF_diff,args=args)
-        elif neuron=='MTH':
-            return Converter.replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH, num_thresholds = args.num_thresholds,args=args)
-        elif neuron=='MTH_with_neg':
-            return Converter.replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_with_neg, num_thresholds = args.num_thresholds,args=args)
-        elif neuron=='MTH_diff':
-            return Converter.replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_diff, num_thresholds = args.num_thresholds,args=args)
-        elif neuron=='MTH_with_neg_line':
-            return Converter.replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_with_neg_line, num_thresholds = args.num_thresholds,args=args)
-        elif neuron=='MTH_diff_line':
-            return Converter.replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_diff_line, num_thresholds = args.num_thresholds,args=args)
-        else:
-            print("Unsupported Neuron Name")
 
-    @staticmethod
-    def replace_relu_by_IF(model,step_mode,T,neuron,args):
-        for name, module in model._modules.items():
-            if module.__class__.__name__.lower()=="relu":
-                model._modules[name] = neuron(T=T, thresh=1.0, step_mode=step_mode)
-            elif "threhook" in module.__class__.__name__.lower() and module.out.__class__.__name__.lower()=='relu':
-                thre = model._modules[name].scale
-                thre = thre*(thre>=0).float()
-                model._modules[name] = neuron(T=T, thresh=thre, step_mode=step_mode)
-            elif hasattr(module, "_modules"):
-                model._modules[name] = Converter.replace_relu_by_IF(module,step_mode,T,neuron,args=args)
-        return model
 
     @staticmethod
     def replace_relu_by_LIF(model,step_mode,T,tau,neuron,args):

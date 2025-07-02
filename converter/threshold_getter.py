@@ -7,18 +7,30 @@ from typing import Tuple
 import numpy as np
 import os
 import utils
-from torch.nn import Module
+from torch.nn import Identity, Module, ReLU
+
+def _add_module_and_node(
+        fx_model: fx.GraphModule,
+        target: str,
+        after: fx.Node,
+        m: nn.Module,
+        args: Tuple
+) -> fx.Node:
+    fx_model.add_submodule(target=target, m=m)
+    with fx_model.graph.inserting_after(n=after):
+        new_node = fx_model.graph.call_module(module_name=target, args=args)
+    return new_node
 
 def set_voltagehook_under_graph(fx_model, mode='Max', momentum=0.1):
     hook_cnt = -1
     for node in fx_model.graph.nodes:
         if node.op != 'call_module':
             continue
-        if type(fx_model.get_submodule(node.target)) is nn.ReLU:
+        if type(fx_model.get_submodule(node.target)) is ReLU:
             hook_cnt += 1
             target = 'snn tailor.' + str(hook_cnt) + '.0'  # voltage_hook
             m = ThreHook(momentum=momentum, mode=mode)
-            new_node = Threshold_Getter._add_module_and_node(fx_model, target, node, m, (node,))
+            new_node = _add_module_and_node(fx_model, target, node, m, (node,))
     fx_model.graph.lint()
     fx_model.recompile()
     return fx_model
@@ -73,26 +85,11 @@ class Threshold_Getter(Module):
         return model
 
     @staticmethod
-    def _add_module_and_node(
-            fx_model: fx.GraphModule,
-            target: str,
-            after: fx.Node,
-            m: nn.Module,
-            args: Tuple
-    ) -> fx.Node:
-        fx_model.add_submodule(target=target, m=m)
-        with fx_model.graph.inserting_after(n=after):
-            new_node = fx_model.graph.call_module(module_name=target, args=args)
-        return new_node
-
-    @staticmethod
     def load_model(model_path, mode_fx, code_path=None,model=None):
         if mode_fx:
             return Threshold_Getter.load_fx_model(model_path+'.pt')
         else:
-            if model is None:
-                print("Must give a model to load state dict")
-                exit(0)
+            assert model
             return Threshold_Getter.load_module_model(model=model, model_path=model_path+'.pth')
 
     @staticmethod
@@ -157,10 +154,7 @@ def merge_dims(tensor, dims):
     for dim in dims:
         merged_size *= shape[dim]
 
-    # 构建新形状
     new_shape = [merged_size] + [shape[i] for i in range(len(shape)) if i not in dims]
-    # 调整顺序并 reshape
-    # print(tensor.shape)
     permuted_tensor = tensor.permute(*dims, *[i for i in range(tensor.ndim) if i not in dims]).contiguous()
     # print(permuted_tensor.shape)
     return permuted_tensor.view(*new_shape).contiguous(), shape, dims
@@ -201,25 +195,23 @@ def calculate_better(mean, var, scale, n=64):
     exp_term = torch.exp(exp_input)
     term3_sum = torch.sum((1 / n) * exp_term, dim=-1)
 
-    # 分母
     denominator = 1 - term2_sum
 
-    # 计算部分1和部分2
     part1 = (mean / theta) * (1 - term1_sum) / denominator
     sqrt_pi_over_2 = torch.sqrt(pi / 2)
     part2 = (sigma / (sqrt_pi_over_2 * theta)) * term3_sum / denominator
 
-    # 合并得到 k1
     k1 = part1 + part2
     return k1
 
-class ThreHook(nn.Module):
+class ThreHook(Module):
     def __init__(
         self,
         scale=1.0,
         mode='Max',
         momentum=0.1,
-        out_layer='Identitiy',
+        out_layer = None,
+        # out_layer='Identitiy',
         level='layer'
     ):
         super().__init__()
@@ -231,6 +223,9 @@ class ThreHook(nn.Module):
         self.register_buffer('num_batches_tracked', torch.tensor(0))
         self.momentum = momentum
         self.out = out_layer
+
+        if self.out is None:
+            self.out = Identity()
 
         self.level=level
 
@@ -314,7 +309,6 @@ class ThreHook(nn.Module):
                 self.num_batches_tracked += x.shape[0]
 
             if out_cname not in ['linear','conv2d']:
-                print("OUT", self.out)
                 x = self.out(x)
             if self.mode[-1] == '%':
                 percentile_val = float(self.mode[:-1])

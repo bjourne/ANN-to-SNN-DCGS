@@ -29,7 +29,6 @@ def val_snn_classfication_with_sop(model, test_loader, device, args=None):
             print('批次：' , batch_idx, ' 最终准确率：', 100 * all_correct[-1] / all_total[-1])
             print('平均准确率: ' + ', '.join([str(100 * all_correct[i] / all_total[i]) for i in range(model.T)]))
 
-            # 计算能耗
             now_sop = [0 for i in range(model.T)]
             now_tot = [0 for i in range(model.T)]
             for name in mon.monitored_layers:

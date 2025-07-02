@@ -6,78 +6,6 @@ import torch
 import copy
 import numpy as np
 
-def forward_replace(args, model):
-    assert args.task == 'classification'
-    if args.task == 'classification':
-        if args.mode == 'test_ann':
-            return model
-        elif args.mode == 'get_threshold':
-            return model
-        elif args.mode == 'test_snn':
-            model.coding_type = args.coding_type
-            model.step_mode = args.step_mode
-            if args.coding_type=='rate':
-                if args.step_mode=='s':
-                    model.T=args.time
-                    model.init_forward = model.forward
-                    model.forward = types.MethodType(forward_snn_rate_s, model)
-                elif args.step_mode=='m':
-                    model.T=args.time
-                    model.merge = MergeTemporalDim()
-                    model.expand = ExpandTemporalDim(model.T)
-                    model.init_forward = model.forward
-                    model.forward = types.MethodType(forward_snn_rate_m, model)
-                else:
-                    print("Unexpected step mode")
-                return model
-            elif args.coding_type=='leaky_rate':
-                if args.step_mode=='s':
-                    model.T=args.time
-                    model.tau = args.tau
-                    model.init_forward = model.forward
-                    model.forward = types.MethodType(forward_snn_leaky_rate_s, model)
-                elif args.step_mode=='m':
-                    model.T=args.time
-                    model.tau = args.tau
-                    model.merge = MergeTemporalDim()
-                    model.expand = ExpandTemporalDim(model.T)
-                    model.init_forward = model.forward
-                    model.forward = types.MethodType(forward_snn_leaky_rate_m, model)
-                else:
-                    print("Unexpected step mode")
-                return model
-            elif args.coding_type=='diff_rate':
-                if args.step_mode=='s':
-                    model.T=args.time
-                    model.init_forward = model.forward
-                    model.forward = types.MethodType(forward_snn_diff_rate_s, model)
-                elif args.step_mode=='m':
-                    model.T=args.time
-                    model.merge = MergeTemporalDim()
-                    model.expand = ExpandTemporalDim(model.T+1)
-                    model.init_forward = model.forward
-                    model.forward = types.MethodType(forward_snn_diff_rate_m, model)
-                else:
-                    print("Unexpected step mode")
-                return model
-            elif args.coding_type=='diff_leaky_rate':
-                if args.step_mode=='s':
-                    model.T=args.time
-                    model.tau = args.tau
-                    model.init_forward = model.forward
-                    model.forward = types.MethodType(forward_snn_diff_leaky_rate_s, model)
-                elif args.step_mode=='m':
-                    model.T=args.time
-                    model.tau = args.tau
-                    model.merge = MergeTemporalDim()
-                    model.expand = ExpandTemporalDim(model.T)
-                    model.init_forward = model.forward
-                    model.forward = types.MethodType(forward_snn_diff_leaky_rate_m, model)
-                else:
-                    print("Unexpected step mode")
-                return model
-            else:
-                print("Unexpected coding_type")
 
 def forward_snn_diff_leaky_rate_s(self, x):
     output = []
@@ -99,17 +27,6 @@ def forward_snn_diff_leaky_rate_m(self, x):
         mul /= self.tau
         out[i]*=mul
     return decodeoutput(out)
-
-def forward_snn_diff_rate_s(self, x):
-    output = []
-    tmp = self.init_forward(torch.zeros_like(x))
-    output.append(copy.deepcopy(tmp))
-    tmp = self.init_forward(x)
-    output.append(copy.deepcopy(tmp))
-    for i in range(self.T-1):
-        tmp = self.init_forward(torch.zeros_like(x))
-        output.append(copy.deepcopy(tmp))
-    return decodeoutput(torch.stack(output, dim=0))
 
 def forward_snn_diff_rate_m(self, x):
     x = add_dimention_diff(x, self.T)
@@ -135,23 +52,10 @@ def forward_snn_leaky_rate_m(self, x):
     out = self.expand(out)
     mul = 1
     for i in range(self.T):
-        out[i]*=mul
+        out[i] *= mul
         mul /= self.tau
     return out
 
-def forward_snn_rate_s(self, x):
-    output = []
-    for i in range(self.T):
-        tmp = self.init_forward(copy.deepcopy(x))
-        output.append(copy.deepcopy(tmp))
-    return torch.stack(output, dim=0)
-
-def forward_snn_rate_m(self, x):
-    x = add_dimention(x, self.T)
-    x = self.merge(x)
-    out = self.init_forward(x)
-    out = self.expand(out)
-    return out
 
 def add_dimention(x, T):
     x.unsqueeze_(0)
@@ -165,14 +69,6 @@ def add_dimention_diff(x, T):
     x[2:] = 0
     return x
 
-def decodeoutput(x):
-    out = torch.zeros_like(x[1:])
-    T = x.shape[0]-1
-    exp_in = x[0].clone().detach()
-    for t in range(T):
-        out[t]= exp_in + x[t+1] - x[0]
-        exp_in = exp_in + (x[t+1] - x[0])/(t+1)
-    return out
 
 
 def forward_snn_rate_m2(self, x):
