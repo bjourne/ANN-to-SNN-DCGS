@@ -3,21 +3,6 @@ from utils import reset
 from statics import SOPMonitor
 from tqdm import tqdm
 
-def val_ann_classfication(model, test_loader, device, args=None):
-    correct = 0
-    total = 0
-    model.eval()
-    with torch.no_grad():
-        for batch_idx, (inputs, targets) in enumerate((test_loader)):
-            inputs = inputs.to(device)
-            outputs = model(inputs)
-            _, predicted = outputs.cpu().max(1)
-            total += float(targets.size(0))
-            correct += float(predicted.eq(targets).sum().item())
-            print(batch_idx,100 * correct / total)
-        final_acc = 100 * correct / total
-    return final_acc
-
 def val_snn_classfication(model, test_loader, device, args=None):
     correct = 0
     total = 0
@@ -29,17 +14,17 @@ def val_snn_classfication(model, test_loader, device, args=None):
             reset(model)
             inputs = inputs.to(device)
             outputs = model(inputs)
-            
+
             # 准确率
             for i in range(model.T):
                 outputs_T = outputs[:i+1].mean(0)
                 _, predicted = outputs_T.cpu().max(1)
                 all_correct[i] += float(predicted.eq(targets).sum().item())
                 all_total[i] += float(targets.size(0))
-            
+
             print('批次：' , batch_idx, ' 最终准确率：', 100 * all_correct[-1] / all_total[-1])
             print('平均准确率: ' + ', '.join([str(100 * all_correct[i] / all_total[i]) for i in range(model.T)]))
-            
+
         final_acc = 100 * all_correct[-1] / all_total[-1]
     return final_acc
 
@@ -64,10 +49,10 @@ def val_snn_classfication_with_sop(model, test_loader, device, args=None):
                 _, predicted = outputs_T.cpu().max(1)
                 all_correct[i] += float(predicted.eq(targets).sum().item())
                 all_total[i] += float(targets.size(0))
-            
+
             print('批次：' , batch_idx, ' 最终准确率：', 100 * all_correct[-1] / all_total[-1])
             print('平均准确率: ' + ', '.join([str(100 * all_correct[i] / all_total[i]) for i in range(model.T)]))
-            
+
             # 计算能耗
             now_sop = [0 for i in range(model.T)]
             now_tot = [0 for i in range(model.T)]
@@ -94,8 +79,8 @@ def val_snn_classfication_with_sop(model, test_loader, device, args=None):
             print('平均发射率: ' + ', '.join([str(round(i,4)) for i in fire_list]))
             print('总能耗: ' + ', '.join([str(round(i,4)) for i in energy_list]))
             mon.clear_recorded_data()
-            
-            
+
+
         final_acc = 100 * all_correct[-1] / all_total[-1]
     return final_acc
 
@@ -113,21 +98,21 @@ def val_ann_object_detection(model, test_loader, device, args=None, score_thresh
             # 如果没有目标（即没有标注），跳过
             continue
         image_id = targets[0][0]['image_id']
-        
+
         with torch.no_grad():
             outputs = model(images)
-        
+
         for output in outputs:
             boxes = output['boxes'].cpu().numpy()
             scores = output['scores'].cpu().numpy()
             labels = output['labels'].cpu().numpy()
-            
+
             # 过滤低置信度的预测
             keep = scores >= score_threshold
             boxes = boxes[keep]
             scores = scores[keep]
             labels = labels[keep]
-            
+
             for box, score, label in zip(boxes, scores, labels):
                 x_min, y_min, x_max, y_max = box
                 width = x_max - x_min
@@ -166,7 +151,7 @@ def val_snn_object_detection(model, test_loader, device, args=None, score_thresh
             # 如果没有目标（即没有标注），跳过
             continue
         image_id = targets[0][0]['image_id']
-        
+
         with torch.no_grad():
             outputs_all = model(images)
         for i in range(args.time):
@@ -195,7 +180,7 @@ def val_snn_object_detection(model, test_loader, device, args=None, score_thresh
                         'bbox': [float(x_min), float(y_min), float(width), float(height)],
                         'score': float(score)
                     })
-    
+
     # 保存预测结果
     import os
     import json

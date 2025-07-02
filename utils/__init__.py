@@ -104,13 +104,13 @@ class ExpandTemporalDim(nn.Module):
         y_shape = [self.T, int(x_seq.shape[0]/self.T)]
         y_shape.extend(x_seq.shape[1:])
         return x_seq.view(y_shape)
-    
-    
+
+
 class ExpandTemporalDim_dict(nn.Module):
     def __init__(self, T):
         super().__init__()
         self.T = T
-    
+
     def forward(self, x_dict: dict):
         # 创建一个新的字典来保存转换后的输出
         y_dict = {}
@@ -142,8 +142,8 @@ class MyMul(nn.Module):
         super(MyMul, self).__init__()
     def forward(self, x, y):
         return x * y
-    
-    
+
+
 class MyatSequential(nn.Module):
     def __init__(self, neuron1, neuron2, module):
         super().__init__()
@@ -152,39 +152,6 @@ class MyatSequential(nn.Module):
         self.module = module
     def forward(self, *inputs):
         return self.module(self.neuron1(inputs[0]),self.neuron2(inputs[1]))
-
-# class MySequential(nn.Module):
-#     def __init__(self, *modules):
-#         """
-#         *modules: 依次传入的子模块，可以是任意 nn.Module
-#         """
-#         super().__init__()
-#         for idx, module in enumerate(modules):
-#             self.add_module(str(idx), module)
-
-#     def forward(self, *inputs):
-#         """
-#         *inputs: 可变参数，多输入
-#         """
-#         # 将所有子模块按照顺序执行
-#         for module in self._modules.values():
-#             # 使用当前 inputs 调用下一个子模块
-#             #   - 如果 inputs 是个 tuple，会被展开成多个参数
-#             #   - 如果 inputs 是单个张量，需要先把它包装成 tuple，才能用 *tuple 解包
-#             outputs = module(*inputs)  
-            
-#             # 将输出再次包装成 tuple，以保证后续链式调用的一致性
-#             if not isinstance(outputs, tuple):
-#                 outputs = (outputs,)
-                
-#             # 下一轮循环就以本次的 outputs 作为 inputs
-#             inputs = outputs
-        
-#         # 最后，如果只包含一个元素，就直接返回那个张量；否则返回 tuple
-#         if len(inputs) == 1:
-#             return inputs[0]
-#         else:
-#             return inputs
 
 def get_modules(nowname,model):
     flag = 0

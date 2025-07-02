@@ -7,28 +7,94 @@ import torch.distributed as dist
 
 from argparse import ArgumentParser
 from utils import seed_all, get_logger, get_modules
-from datasets import datapool
-from train_val_functions import valpool
+
 from converter import Threshold_Getter,Converter
+from datasets.getdataloader import GetCifar10, GetCifar100
 from forwards import forward_replace
 from models.VGG import *
+from torch.nn import (
+    BatchNorm2d, Conv2d, Linear,
+    Flatten,
+    MaxPool2d,
+    ReLU,
+    Sequential
+)
+from torch.nn.init import (
+    constant_, kaiming_normal_, normal_, uniform_, zeros_
+)
+from torchinfo import summary
+
+def datapool(args):
+    if args.dataset == 'cifar10':
+        return GetCifar10(args)
+    elif args.dataset == 'cifar100':
+        return GetCifar100(args)
+    elif args.dataset == 'imagenet':
+        return GetImageNet(args)
+    elif args.dataset == 'coco':
+        return GetCOCO(args)
+    assert False
+
+def val_ann_classfication(model, test_loader, device):
+    correct = 0
+    total = 0
+    model.eval()
+    with torch.no_grad():
+        for batch_idx, (inputs, targets) in enumerate(test_loader):
+            inputs = inputs.to(device)
+            outputs = model(inputs)
+            _, predicted = outputs.cpu().max(1)
+            total += float(targets.size(0))
+            correct += float(predicted.eq(targets).sum().item())
+            print(batch_idx, 100 * correct / total)
+        final_acc = 100 * correct / total
+    return final_acc
+
+def valpool(args):
+    assert args.task == 'classification'
+    if args.mode == 'test_ann':
+        return val_ann_classfication
+    elif args.mode == 'get_threshold':
+        return val_ann_classfication
+    elif args.mode == 'test_snn':
+        if args.sop:
+            return val_snn_classfication_with_sop
+        else:
+            return val_snn_classfication
+    assert False
 
 def get_args():
     parser = ArgumentParser(description='Conversion Frame')
 
     # Model configuration
-    parser.add_argument('--model_name', default='vgg16_bn', type=str, help='Model class name')
-    parser.add_argument('--load_name', '-load', type=str, help='Path to the model state_dict file')
+    parser.add_argument(
+        '--model_name', default='vgg16_bn',
+        type=str, help='Model class name'
+    )
+    parser.add_argument(
+        '--load_name', '-load',
+        type=str, help='Path to the model state_dict file'
+    )
     parser.add_argument(
         '--mode', choices=[
-            'test_ann', 'get_threshold', 'test_snn', 'train_snn'
+            'test_ann',
+            'get_threshold',
+            'test_snn',
+            'train_snn'
         ],
         default='test_ann',
         type=str,
         help='Mode of operation'
     )
-    parser.add_argument('--sop', action='store_true', help="whether to static sop")
-    parser.add_argument('--save_name', '-save', default='checkpoint', type=str, help='Name for saving the model')
+    parser.add_argument(
+        '--sop',
+        action='store_true',
+        help="whether to static sop"
+    )
+    parser.add_argument(
+        '--save_name', '-save',
+        default='checkpoint', type=str, help='Name for saving the model'
+    )
 
     # Threshold configuration
     parser.add_argument(
@@ -70,18 +136,37 @@ def get_args():
     parser.add_argument('--task', choices=['classification','object_detection'], default='classification', type=str, help='Task type')
 
     # Dataset configuration
-    parser.add_argument('--dataset', '-data', default='cifar10', type=str, help='Dataset name')
-    parser.add_argument('--dataset_path', default='../data', type=str, help='Dataset path')
-    parser.add_argument('--batchsize', '-b', default=25, type=int, metavar='N', help='Batch size')
+    parser.add_argument(
+        '--dataset', '-data', default='cifar10',
+        type=str, help='Dataset name'
+    )
+    parser.add_argument(
+        '--dataset_path', default='../data', type=str, help='Dataset path'
+    )
+    parser.add_argument(
+        '--batchsize', '-b', default=25,
+        type=int, metavar='N', help='Batch size'
+    )
 
     # Device configuration
-    parser.add_argument('--device', '-dev', default='0', type=str, help='CUDA device ID (default: 0)')
+    parser.add_argument(
+        '--device',
+        '-dev',
+        default='0',
+        type=str,
+        help='CUDA device ID (default: 0)'
+    )
+
     # Device configuration only for imagenet
     # eg.torchrun --nproc_per_node=1 main.py --logger --dataset imagenet --batchsize 64 --distributed
-    parser.add_argument('--distributed', action='store_true', help="Enable distributed (default: False)")
+    parser.add_argument(
+        '--distributed', action='store_true', help="Enable distributed (default: False)"
+    )
 
     # Logger configuration
-    parser.add_argument('--logger', action='store_true', help="Enable logging (default: False)")
+    parser.add_argument(
+        '--logger', action='store_true', help="Enable logging (default: False)"
+    )
     parser.add_argument('--logger_path', type=str, default="logs/log.txt", help="Path to save the log file")
 
     # Training and Testing configuration
@@ -89,17 +174,14 @@ def get_args():
     parser.add_argument('--time', '-T', type=int, default=0, help='SNN simulation time')
 
     # YAML configuration
-    parser.add_argument('--config', default='configs/config.yaml', type=str, help="Path to the YAML configuration file")
+    parser.add_argument(
+        '--config', default='configs/config.yaml',
+        type=str,
+        help="Path to the YAML configuration file"
+    )
 
     # Parse arguments
     args = parser.parse_args()
-
-    # Load configuration from YAML if specified
-    if args.config:
-        with open(args.config, 'r') as file:
-            config = yaml.safe_load(file)
-        for key, value in config.items():
-            setattr(args, key, value)
 
     # Set CUDA device
     os.environ["CUDA_VISIBLE_DEVICES"] = args.device
@@ -130,66 +212,101 @@ def load_model_from_dict(model, model_path, device):
     return model
 
 def load_model_from_model(model, model_path, device):
-    model = torch.load(model_path)
-    return model
+    return torch.load(model_path)
+
+# Build the VGG16 layers
+def build_vgg_layers(n_cls):
+    vgg16_layers = [
+        64, 64, "M",
+        128, 128, "M",
+        256, 256, 256, "M",
+        512, 512, 512, "M",
+        512, 512, 512, "M",
+    ]
+    n_chans_in = 3
+    for v in vgg16_layers:
+        if type(v) == int:
+            # Batch norm so no bias.
+            yield Conv2d(n_chans_in, v, 3, padding=1, bias=False)
+            yield BatchNorm2d(v)
+            yield ReLU(True)
+            n_chans_in = v
+        elif v == "M":
+            yield MaxPool2d(2)
+        else:
+            assert False
+    yield Flatten()
+    yield Linear(512, 4096)
+    yield ReLU(inplace = True)
+    yield Linear(4096, 4096)
+    yield ReLU(inplace = True)
+    yield Linear(4096, n_cls)
+
+def my_vgg16(n_cls):
+    net = Sequential(*build_vgg_layers(n_cls))
+    for m in net.modules():
+        if isinstance(m, Conv2d):
+            kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            if m.bias is not None:
+                constant_(m.bias, 0)
+        elif isinstance(m, BatchNorm2d):
+            constant_(m.weight, 1)
+            constant_(m.bias, 0)
+        elif isinstance(m, Linear):
+            normal_(m.weight, 0, 0.01)
+            constant_(m.bias, 0)
+    return net
 
 def modelpool(args):
-    if args.task == 'classification':
-        if args.dataset == 'imagenet':
-            num_classes = 1000
-        elif args.dataset == 'cifar100':
-            num_classes = 100
-        elif args.dataset == 'cifar10':
-            num_classes = 10
-        else:
-            print("still not support this dataset")
-            exit(0)
-        if args.model_name == 'vgg16_bn':
-            return vgg16(num_classes=num_classes)
-        elif args.model_name == 'vgg16_wobn':
-            return vgg16_wobn(num_classes=num_classes)
-        elif args.model_name == 'vgg19_bn':
-            return vgg19(num_classes=num_classes)
-        elif args.model_name == 'resnet18':
-            return resnet18(num_classes=num_classes)
-        elif args.model_name == 'resnet20':
-            return resnet20(num_classes=num_classes)
-        elif args.model_name == 'resnet34':
-            return resnet34(num_classes=num_classes)
-        elif args.model_name == 'resnet50':
-            return resnet34(num_classes=num_classes)
-        elif args.model_name == 'resnet152':
-            return resnet34(num_classes=num_classes)
-        elif args.model_name == 'vit_small':
-            return vit_small_patch16_224(num_classes=num_classes)
-        elif args.model_name == 'vit_base':
-            return vit_base_patch16_224(num_classes=num_classes)
-        elif args.model_name == 'vit_large':
-            return vit_large_patch16_224(num_classes=num_classes)
-        elif args.model_name == 'eva02_tiny':
-            return eva02_tiny_patch14_336(num_classes=num_classes)
-        elif args.model_name == 'eva02_small':
-            return eva02_small_patch14_336(num_classes=num_classes)
-        elif args.model_name == 'eva02_base':
-            return eva02_base_patch14_448(num_classes=num_classes)
-        elif args.model_name == 'eva02_large':
-            return eva02_large_patch14_448(num_classes=num_classes)
-        else:
-            print("still not support this model")
-            exit(0)
-    elif args.task == 'object_detection':
-        if args.dataset == 'coco':
-            num_classes = 91
-        else:
-            print("error dataset")
-        if args.model_name == 'fcos_resnet50_fpn':
-            return fcos_resnet50_fpn(num_classes=num_classes)
-        elif args.model_name == 'retinanet_resnet50_fpn':
-            return retinanet_resnet50_fpn(num_classes=num_classes)
-        elif args.model_name == 'retinanet_resnet50_fpn_v2':
-            return retinanet_resnet50_fpn_v2(num_classes=num_classes)
+    assert args.task == 'classification'
+    if args.dataset == 'imagenet':
+        num_classes = 1000
+    elif args.dataset == 'cifar100':
+        num_classes = 100
+    elif args.dataset == 'cifar10':
+        num_classes = 10
     else:
         assert False
+
+    ctors = {
+        "vgg16_bn" : vgg16,
+        "my_vgg16" : my_vgg16
+    }
+    return ctors[args.model_name](num_classes)
+
+    if n == 'vgg16_bn':
+        return vgg16(num_classes=num_classes)
+    elif n == "my_vgg16":
+        return my_vgg16(num_classes)
+    elif args.model_name == 'vgg16_wobn':
+        return vgg16_wobn(num_classes=num_classes)
+    elif args.model_name == 'vgg19_bn':
+        return vgg19(num_classes=num_classes)
+    elif args.model_name == 'resnet18':
+        return resnet18(num_classes=num_classes)
+    elif args.model_name == 'resnet20':
+        return resnet20(num_classes=num_classes)
+    elif args.model_name == 'resnet34':
+        return resnet34(num_classes=num_classes)
+    elif args.model_name == 'resnet50':
+        return resnet34(num_classes=num_classes)
+    elif args.model_name == 'resnet152':
+        return resnet34(num_classes=num_classes)
+    elif args.model_name == 'vit_small':
+        return vit_small_patch16_224(num_classes=num_classes)
+    elif args.model_name == 'vit_base':
+        return vit_base_patch16_224(num_classes=num_classes)
+    elif args.model_name == 'vit_large':
+        return vit_large_patch16_224(num_classes=num_classes)
+    elif args.model_name == 'eva02_tiny':
+        return eva02_tiny_patch14_336(num_classes=num_classes)
+    elif args.model_name == 'eva02_small':
+        return eva02_small_patch14_336(num_classes=num_classes)
+    elif args.model_name == 'eva02_base':
+        return eva02_base_patch14_448(num_classes=num_classes)
+    elif args.model_name == 'eva02_large':
+        return eva02_large_patch14_448(num_classes=num_classes)
+    assert False
 
 def main():
     args, device = get_args()
@@ -199,9 +316,9 @@ def main():
     train_loader, test_loader = datapool(args)
     model = modelpool(args)
 
-    print(model)
-
-    get_modules(111, model)
+    # shape = 1, 3, 32, 32
+    # summary(model, input_size = shape, device = "cpu")
+    #get_modules(111, model)
 
     print("* Parameters")
     print("  mode: %s" % args.mode)
@@ -223,6 +340,9 @@ def main():
         model.to(device)
         model.eval()
         model = Converter.change_maxpool_before_relu(model)
+
+        print(model)
+
         model_converter = Threshold_Getter(
             dataloader=test_loader,
             mode=args.threshold_mode,

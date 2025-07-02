@@ -38,11 +38,12 @@ class Converter(nn.Module):
     @staticmethod
     def change_maxpool_before_relu(model):
         for name, module in model._modules.items():
+            cname = module.__class__.__name__.lower()
             if hasattr(module, "_modules"):
                 model._modules[name] = Converter.change_maxpool_before_relu(module)
-            if 'relu' in module.__class__.__name__.lower() or ("threhook" in module.__class__.__name__.lower() and module.out.__class__.__name__.lower()=='relu'):
+            if 'relu' in cname or ("threhook" in cname and module.out.__class__.__name__.lower()=='relu'):
                 tmp_name = name
-            if 'maxpool' in module.__class__.__name__.lower():
+            if 'maxpool' in cname:
                 tmp = model._modules[tmp_name]
                 model._modules[tmp_name] = nn.Identity()
                 model._modules[name] = nn.Sequential(model._modules[name],tmp)

@@ -1,7 +1,9 @@
+from torch.utils.data import DataLoader
 
 from torchvision import datasets, transforms
+from torchvision.transforms import *
 from torchvision.datasets import CIFAR10, CIFAR100
-from torch.utils.data import DataLoader
+
 
 
 import torch
@@ -28,13 +30,15 @@ def GetCifar10(args):
     return train_dataloader, test_dataloader
 
 def GetCifar100(args):
-    trans_t = transforms.Compose([transforms.RandomCrop(32, padding=4),
-                                  transforms.RandomHorizontalFlip(),
-                                  CIFAR10Policy(),
-                                  transforms.ToTensor(),
-                                  transforms.Normalize(mean=[n/255. for n in [129.3, 124.1, 112.4]], std=[n/255. for n in [68.2,  65.4,  70.4]]),
-                                  Cutout(n_holes=1, length=16)
-                                  ])
+    trans_t = Compose([
+        RandomCrop(32, padding=4),
+        RandomHorizontalFlip(),
+        CIFAR10Policy(),
+        ToTensor(),
+        Normalize(mean=[n/255. for n in [129.3, 124.1, 112.4]],
+                  std=[n/255. for n in [68.2,  65.4,  70.4]]),
+        Cutout(n_holes=1, length=16)
+    ])
     trans = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=[n/255. for n in [129.3, 124.1, 112.4]], std=[n/255. for n in [68.2,  65.4,  70.4]])])
     train_data = datasets.CIFAR100(args.dataset_path, train=True, transform=trans_t, download=True)
     test_data = datasets.CIFAR100(args.dataset_path, train=False, transform=trans, download=True)
