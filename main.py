@@ -455,7 +455,7 @@ def decodeoutput(x):
     T = x.shape[0]-1
     exp_in = x[0].clone().detach()
     for t in range(T):
-        out[t]= exp_in + x[t+1] - x[0]
+        out[t] = exp_in + x[t+1] - x[0]
         exp_in = exp_in + (x[t+1] - x[0])/(t+1)
     return out
 
@@ -544,41 +544,38 @@ class IF(Module):
 class IF_diff(nn.Module):
     def __init__(self, thresh):
         super().__init__()
-        self.act = ZIF.apply
-        self.thresh = thresh # nn.Parameter(thresh.clone().detach(), requires_grad=True)
+        self.thresh = thresh
         self.T = -1
 
     def reset(self):
         self.T = -1
 
     def forward(self, x):
-        if True:
-            if self.T==-1:
-                self.bias = x.clone()
-                self.exp_in = x.clone()
-                self.exp_out = torch.zeros_like(x)
-                self.cumulative_out = torch.zeros_like(x)
-                self.T = self.T+1
-                return torch.zeros_like(x)
-            if self.T==0:
-                self.mem = 0.5 * self.thresh
-            self.mem = self.mem + x - self.bias + self.exp_in - self.exp_out
-            spike = self.act(self.mem - self.thresh) * self.thresh
+        if self.T==-1:
+            self.bias = x.clone()
+            self.exp_in = x.clone()
+            self.exp_out = torch.zeros_like(x)
+            self.cum_out = torch.zeros_like(x)
+            self.T = self.T+1
+            self.mem = 0.5 * self.thresh
+            return torch.zeros_like(x)
 
-            self.cumulative_out = self.cumulative_out + self.exp_out
-            spike_neg = self.act(-self.mem) * ((self.cumulative_out-self.thresh)>=0).float() * self.thresh
-            spike = spike-spike_neg
-            self.cumulative_out = self.cumulative_out + spike
+        self.mem += (x - self.bias) + self.exp_in - self.exp_out
+        self.cum_out += self.exp_out
 
-            self.mem = self.mem - spike
-            # self.mem = self.mem - (spike!=0).float()*self.mem
 
-            self.exp_in = self.exp_in + (x - self.bias)/(self.T+1)
-            self.exp_out = self.exp_out + spike/(self.T+1)
-            # self.exp_out = self.exp_out + (spike!=0).float()*self.mem/(self.T+1)
+        pos_spike = (self.mem - self.thresh >= 0).float()
+        neg_spike = (self.mem <= 0) * ((self.cum_out-self.thresh)>=0).float()
+        spike = self.thresh * (pos_spike - neg_spike)
 
-            self.T = self.T + 1
-            return spike
+        self.cum_out = self.cum_out + spike
+
+        self.mem -= spike
+
+        self.exp_in += (x - self.bias)/(self.T+1)
+        self.exp_out += spike/(self.T+1)
+        self.T += 1
+        return spike
 
 class IF_with_neg(Module):
     def __init__(self, thresh=1.0):
