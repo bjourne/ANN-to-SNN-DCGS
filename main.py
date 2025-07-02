@@ -493,12 +493,10 @@ def forward_replace(args, model):
     if args.coding_type=='rate':
         model.init_forward = model.forward
         model.forward = MethodType(forward_snn_rate_s, model)
-        return model
     elif args.coding_type=='leaky_rate':
         model.tau = args.tau
         model.init_forward = model.forward
         model.forward = MethodType(forward_snn_leaky_rate_s, model)
-        return model
     elif args.coding_type=='diff_rate':
         if args.step_mode=='s':
             model.init_forward = model.forward
@@ -510,7 +508,6 @@ def forward_replace(args, model):
             model.forward = MethodType(forward_snn_diff_rate_m, model)
         else:
             print("Unexpected step mode")
-        return model
     elif args.coding_type=='diff_leaky_rate':
         if args.step_mode=='s':
             model.tau = args.tau
@@ -524,7 +521,6 @@ def forward_replace(args, model):
             model.forward = MethodType(forward_snn_diff_leaky_rate_m, model)
         else:
             print("Unexpected step mode")
-        return model
     else:
         assert False
 
@@ -532,7 +528,7 @@ def forward_replace(args, model):
 class IF(Module):
     def __init__(self, thresh):
         super().__init__()
-        self.thresh = nn.Parameter(thresh.clone().detach(), requires_grad=True)
+        self.thresh = thresh
 
     def reset(self):
         self.mem = None
@@ -544,6 +540,45 @@ class IF(Module):
         spike = (self.mem - self.thresh >= 0) * self.thresh
         self.mem = self.mem - spike
         return spike
+
+class IF_diff(nn.Module):
+    def __init__(self, thresh):
+        super().__init__()
+        self.act = ZIF.apply
+        self.thresh = thresh # nn.Parameter(thresh.clone().detach(), requires_grad=True)
+        self.T = -1
+
+    def reset(self):
+        self.T = -1
+
+    def forward(self, x):
+        if True:
+            if self.T==-1:
+                self.bias = x.clone()
+                self.exp_in = x.clone()
+                self.exp_out = torch.zeros_like(x)
+                self.cumulative_out = torch.zeros_like(x)
+                self.T = self.T+1
+                return torch.zeros_like(x)
+            if self.T==0:
+                self.mem = 0.5 * self.thresh
+            self.mem = self.mem + x - self.bias + self.exp_in - self.exp_out
+            spike = self.act(self.mem - self.thresh) * self.thresh
+
+            self.cumulative_out = self.cumulative_out + self.exp_out
+            spike_neg = self.act(-self.mem) * ((self.cumulative_out-self.thresh)>=0).float() * self.thresh
+            spike = spike-spike_neg
+            self.cumulative_out = self.cumulative_out + spike
+
+            self.mem = self.mem - spike
+            # self.mem = self.mem - (spike!=0).float()*self.mem
+
+            self.exp_in = self.exp_in + (x - self.bias)/(self.T+1)
+            self.exp_out = self.exp_out + spike/(self.T+1)
+            # self.exp_out = self.exp_out + (spike!=0).float()*self.mem/(self.T+1)
+
+            self.T = self.T + 1
+            return spike
 
 class IF_with_neg(Module):
     def __init__(self, thresh=1.0):
@@ -566,7 +601,7 @@ class IF_with_neg(Module):
         self.mem = self.mem - spike
         return spike
 
-def replace_relu_by_IF(model, T, neuron):
+def replace_relu_by_IF(model, neuron):
     def fix_thre_hook(m):
         thresh = m.scale * (m.scale >= 0).float()
         return neuron(thresh)
@@ -584,15 +619,15 @@ def replace_relu_by_IF(model, T, neuron):
 
 def replace_by_neuron(model, neuron, args, step_mode='s', T=0):
     if neuron=='IF':
-        return replace_relu_by_IF(model, T, IF)
+        replace_relu_by_IF(model, IF)
     elif neuron=='IF_with_neg':
-        return replace_relu_by_IF(model, T, IF_with_neg)
+        replace_relu_by_IF(model, IF_with_neg)
     elif neuron == 'IF_diff':
-        return replace_relu_by_IF(model, step_mode, T, IF_diff)
+        replace_relu_by_IF(model, IF_diff)
     elif neuron == 'IF_with_neg_line':
-        return replace_relu_by_IF(model, step_mode, T, IF_with_neg_line)
+        replace_relu_by_IF(model, step_mode, T, IF_with_neg_line)
     elif neuron == 'IF_diff_line':
-        return replace_relu_by_IF(model, step_mode, T, IF_diff_line)
+        replace_relu_by_IF(model, step_mode, T, IF_diff_line)
     elif neuron=='LIF':
         return replace_relu_by_LIF(model, step_mode=step_mode, T=T, tau=args.tau, neuron=LIF,args=args)
     elif neuron=='LIF_with_neg':
@@ -609,10 +644,11 @@ def replace_by_neuron(model, neuron, args, step_mode='s', T=0):
         return replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_with_neg_line, num_thresholds = args.num_thresholds,args=args)
     elif neuron=='MTH_diff_line':
         return replace_relu_by_MTH(model, step_mode=step_mode, T=T, neuron=MTH_diff_line, num_thresholds = args.num_thresholds,args=args)
-    assert False
+    else:
+        assert False
 
 def convert_ann_to_snn(ann, neuron, args, T, fuse_flag):
-    snn = replace_by_neuron(
+    replace_by_neuron(
         ann,
         neuron,
         args,
@@ -620,10 +656,10 @@ def convert_ann_to_snn(ann, neuron, args, T, fuse_flag):
         T
     )
     if fuse_flag:
-        snn = fx.symbolic_trace(snn)
-        snn_fused = self.fuse(snn, fuse_flag=fuse_flag)
-        return snn_fused
-    return snn
+        ann = fx.symbolic_trace(ann)
+        ann_fused = self.fuse(ann, fuse_flag=fuse_flag)
+        return ann_fused
+    return ann
 
 def main():
     args, device = get_args()
@@ -694,7 +730,7 @@ def main():
             model, args.neuron_name, args, args.time, args.fuse
         )
 
-        model = forward_replace(args, model)
+        forward_replace(args, model)
         model.to(device)
         model.eval()
 
