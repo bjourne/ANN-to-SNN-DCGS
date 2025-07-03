@@ -10,27 +10,23 @@ import torch.distributed as dist
 
 from argparse import ArgumentParser
 from converter import Converter, Threshold_Getter
-from converter.threshold_getter import ThreHook, replace_nonlinear_by_hook, save_model
+from converter.threshold_getter import ThreHook, save_model
 from copy import deepcopy
 from datasets.getdataloader import GetCifar10, GetCifar100
 from forwards import add_dimention
 from models.VGG import *
 from neurons.relu_neuron import ZIF
-from torch.nn import (
-    BatchNorm2d, Conv2d, Linear,
-    Flatten,
-    Identity,
-    MaxPool2d,
-    ReLU,
-    Sequential
-)
+from torch.fx import symbolic_trace
+from torch.nn import *
 from torch.nn.init import (
     constant_, kaiming_normal_, normal_, uniform_, zeros_
 )
 from torchinfo import summary
+from tqdm import tqdm
 from types import MethodType
 from utils import (
-    MergeTemporalDim, ExpandTemporalDim,
+    MergeTemporalDim, MyAt,
+    ExpandTemporalDim,
     seed_all, get_logger, get_modules
 )
 
@@ -128,6 +124,27 @@ class MaxPoolNeuron(Module):
             self.T=-1
         else:
             self.T=0
+
+def get_scale_from_var(model, T = 64):
+    def update_scale(m):
+        m.get_scale_from_var(T = T)
+        return m
+    replace_modules(
+        model,
+        lambda m: isinstance(m, ThreHook),
+        update_scale
+    )
+
+
+
+    # for name, module in model._modules.items():
+    #     cname = module.__class__.__name__.lower()
+    #     if cname == "threhook":
+    #         model._modules[name].get_scale_from_var(T=T)
+    #     elif hasattr(module, "_modules"):
+    #         get_scale_from_var(module, T=T)
+    # return model
+
 
 def replace_by_maxpool_neuron(
     model,
@@ -477,6 +494,9 @@ def forward_snn_diff_rate_s(net, x):
         output.append(deepcopy(tmp))
     return decodeoutput(torch.stack(output, dim=0))
 
+
+
+
 class IF(Module):
     def __init__(self, thresh):
         super().__init__()
@@ -609,14 +629,13 @@ def test_snn(
 
     if threshold_mode=="var":
         if neuron_name.startswith('MTH'):
-            model = Threshold_Getter.get_scale_from_var(
-                model, T=time*(2**num_thresholds))
+            get_scale_from_var(model, T=time*(2**num_thresholds))
         else:
-            model = Threshold_Getter.get_scale_from_var(model, T=time)
+            get_scale_from_var(model, T=time)
 
     replace_by_neuron(model, neuron_name, time)
     if fuse:
-        model = fx.symbolic_trace(model)
+        model = symbolic_trace(model)
         model = self.fuse(model, fuse_flag=fuse)
 
     model.coding_type = coding_type
@@ -646,11 +665,77 @@ def test_snn(
         val = val_snn_classfication
     val(model, loader, device, args)
 
+def set_voltagehook_under_graph(fx_model, mode='Max', momentum=0.1):
+    hook_cnt = -1
+    for node in fx_model.graph.nodes:
+        if node.op != 'call_module':
+            continue
+        if type(fx_model.get_submodule(node.target)) is ReLU:
+            hook_cnt += 1
+            target = 'snn tailor.' + str(hook_cnt) + '.0'  # voltage_hook
+            m = ThreHook(momentum=momentum, mode=mode)
+            new_node = _add_module_and_node(fx_model, target, node, m, (node,))
+    fx_model.graph.lint()
+    fx_model.recompile()
+    return fx_model
+
+def replace_nonlinear_by_hook(model, momentum, mode, level):
+    targets = (
+        Conv2d,
+        GELU, GroupNorm,
+        LayerNorm, Linear,
+        MyAt, ReLU, SiLU, Softmax
+    )
+    replace_modules(
+        model,
+        lambda m: isinstance(m, targets),
+        lambda m: ThreHook(
+            mode = mode,
+            momentum = momentum,
+            out_layer = m,
+            level = level
+        )
+    )
+    return model
+
+def get_threshold(
+    model,
+    load_name, save_name,
+    device, loader,
+    threshold_mode, threshold_level,
+    fx
+):
+    model = load_model_from_dict(model, load_name, device)
+    model.to(device)
+    model.eval()
+    change_maxpool_before_relu(model)
+
+    momentum = 0.1
+    if fx:
+        model = symbolic_trace(model).to(device)
+        model.eval()
+        model_with_hook = set_voltagehook_under_graph(
+            model, mode=threshold_mode, momentum=momentum
+        ).to(device)
+    else:
+        model.eval()
+        replace_nonlinear_by_hook(
+            model,
+            momentum,
+            threshold_mode,
+            threshold_level
+        ).to(device)
+    for xs, _ in tqdm(loader):
+        xs = xs.to(device)
+        model(xs)
+    save_model(model, save_name, fx)
+
+
 def main():
     args, device = get_args()
     seed_all(args.seed)
 
-    train_loader, l_te = datapool(args)
+    l_tr, l_te = datapool(args)
     model = modelpool(args)
 
     keys = [
@@ -675,23 +760,28 @@ def main():
         model.eval()
         val_ann_classfication(model, l_te, device)
     elif args.mode == 'get_threshold':
-        model = load_model_from_dict(model, args.load_name, device)
-        model.to(device)
-        model.eval()
-        change_maxpool_before_relu(model)
-
-        getter = Threshold_Getter(
-            l_te,
-            mode=args.threshold_mode,
-            level=args.threshold_level,
-            device=device,
-            momentum=0.1,
-            output_fx=args.fx
+        get_threshold(
+            model,
+            args.load_name, args.save_name,
+            device, l_te,
+            args.threshold_mode, args.threshold_level,
+            args.fx
         )
-        print("MODEL", model)
-        model_with_threshold = getter(model)
-        save_model(model_with_threshold, args.save_name, args.fx)
-        print("Successfully Save Model with Threshold")
+        # model = load_model_from_dict(model, args.load_name, device)
+        # model.to(device)
+        # model.eval()
+        # change_maxpool_before_relu(model)
+
+        # getter = Threshold_Getter(
+        #     l_te,
+        #     mode=args.threshold_mode,
+        #     level=args.threshold_level,
+        #     device=device,
+        #     momentum=0.1,
+        #     output_fx=args.fx
+        # )
+        # model_with_threshold = getter(model)
+        # save_model(model_with_threshold, args.save_name, args.fx)
     elif args.mode == 'test_snn':
         assert args.time > 0
         test_snn(

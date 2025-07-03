@@ -21,20 +21,6 @@ def _add_module_and_node(
         new_node = fx_model.graph.call_module(module_name=target, args=args)
     return new_node
 
-def set_voltagehook_under_graph(fx_model, mode='Max', momentum=0.1):
-    hook_cnt = -1
-    for node in fx_model.graph.nodes:
-        if node.op != 'call_module':
-            continue
-        if type(fx_model.get_submodule(node.target)) is ReLU:
-            hook_cnt += 1
-            target = 'snn tailor.' + str(hook_cnt) + '.0'  # voltage_hook
-            m = ThreHook(momentum=momentum, mode=mode)
-            new_node = _add_module_and_node(fx_model, target, node, m, (node,))
-    fx_model.graph.lint()
-    fx_model.recompile()
-    return fx_model
-
 @staticmethod
 def load_model(model_path, mode_fx, code_path=None,model=None):
     if mode_fx:
@@ -47,11 +33,11 @@ class Threshold_Getter(Module):
     def __init__(
         self,
         loader,
-        mode='99.9',
+        mode = '99.9',
         level = 'layer',
-        device=None,
-        momentum=0.1,
-        output_fx=False
+        device = None,
+        momentum = 0.1,
+        output_fx = False
     ):
         super().__init__()
         self.loader = loader
@@ -60,37 +46,6 @@ class Threshold_Getter(Module):
         self.device = device
         self.momentum = momentum
         self.output_fx = output_fx
-
-    def forward(self, model):
-        assert self.device
-        if self.output_fx:
-            model = fx.symbolic_trace(model).to(self.device)
-            model.eval()
-            model_with_hook = set_voltagehook_under_graph(
-                model, mode=self.mode, momentum=self.momentum
-            ).to(self.device)
-        else:
-            model.eval()
-            replace_nonlinear_by_hook(
-                model,
-                self.momentum,
-                self.mode,
-                self.level
-            ).to(self.device)
-        for _, (xs, _) in enumerate(tqdm(self.loader)):
-            xs = xs.to(self.device)
-            model(xs)
-        return model
-
-    @staticmethod
-    def get_scale_from_var(model, T = 64):
-        for name, module in model._modules.items():
-            cname = module.__class__.__name__.lower()
-            if cname == "threhook":
-                model._modules[name].get_scale_from_var(T=T)
-            elif hasattr(module, "_modules"):
-                Threshold_Getter.get_scale_from_var(module, T=T)
-        return model
 
     @staticmethod
     def load_module_model(model, model_path):
@@ -108,28 +63,6 @@ class Threshold_Getter(Module):
                 code = f.read()
             return model, code
         return model
-
-def replace_nonlinear_by_hook(model, momentum, mode, level):
-    cnames = [
-        "relu",
-        'gelu',
-        'silu',
-        'layernorm','groupnorm','softmax','myat',
-        'linear',
-        'conv2d'
-    ]
-    for name, module in model._modules.items():
-        cname = module.__class__.__name__.lower()
-        if hasattr(module, "_modules"):
-            replace_nonlinear_by_hook(module, momentum, mode, level)
-        if cname in cnames:
-            model._modules[name] = ThreHook(
-                mode=mode,
-                momentum=momentum,
-                out_layer=module,
-                level=level
-            )
-    return model
 
 def save_fx_model(fx_model, model_path, code_path=None):
     if code_path is not None:
@@ -156,9 +89,6 @@ def merge_dims(tensor, dims):
     return permuted_tensor.view(*new_shape).contiguous(), shape, dims
 
 def restore_dims(percentile_tensor, original_shape, dims):
-    """
-    根据原始形状和 dims，将百分位数结果还原，合并的维度大小变为 1。
-    """
     dims = sorted(dims)
     new_shape = [1 if i in dims else original_shape[i] for i in range(len(original_shape))]
     return percentile_tensor.view(*new_shape).contiguous()
@@ -322,6 +252,7 @@ class ThreHook(Module):
                 else:
                     self.momentum = x.shape[0]/(self.num_batches_tracked+x.shape[0])
                     self.scale = (1 - self.momentum) * self.scale + self.momentum * s_t
+                    #print(self.scale)
                 self.num_batches_tracked += x.shape[0]
             elif self.mode.lower() in ['max']:
                 s_t = x.clone().detach().amax(dim=dims, keepdim=True).detach()
