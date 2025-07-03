@@ -477,39 +477,6 @@ def forward_snn_diff_rate_s(net, x):
         output.append(deepcopy(tmp))
     return decodeoutput(torch.stack(output, dim=0))
 
-def forward_replace(args, net):
-    assert args.step_mode == "s"
-    net.coding_type = args.coding_type
-    net.step_mode = args.step_mode
-    net.T = args.time
-
-    if args.coding_type=='rate':
-        net.init_forward = net.forward
-        net.forward = MethodType(forward_snn_rate_s, net)
-    elif args.coding_type=='leaky_rate':
-        net.tau = args.tau
-        net.init_forward = net.forward
-        net.forward = MethodType(forward_snn_leaky_rate_s, net)
-    elif args.coding_type=='diff_rate':
-        net.init_forward = net.forward
-        net.forward = MethodType(forward_snn_diff_rate_s, net)
-    elif args.coding_type=='diff_leaky_rate':
-        if args.step_mode=='s':
-            net.tau = args.tau
-            net.init_forward = net.forward
-            net.forward = MethodType(forward_snn_diff_leaky_rate_s, net)
-        elif args.step_mode=='m':
-            net.tau = args.tau
-            net.merge = MergeTemporalDim()
-            net.expand = ExpandTemporalDim(net.T)
-            net.init_forward = net.forward
-            net.forward = MethodType(forward_snn_diff_leaky_rate_m, net)
-        else:
-            print("Unexpected step mode")
-    else:
-        assert False
-
-
 class IF(Module):
     def __init__(self, thresh):
         super().__init__()
@@ -584,6 +551,7 @@ class IF_with_neg(Module):
 
 def replace_relu_by_IF(model, neuron):
     def fix_thre_hook(m):
+        assert m.scale > 0
         thresh = m.scale * (m.scale >= 0).float()
         return neuron(thresh)
     replace_modules(
@@ -598,7 +566,7 @@ def replace_relu_by_IF(model, neuron):
     )
     return model
 
-def replace_by_neuron(model, neuron, args, step_mode='s', T=0):
+def replace_by_neuron(model, neuron, T=0):
     if neuron=='IF':
         replace_relu_by_IF(model, IF)
     elif neuron=='IF_with_neg':
@@ -628,19 +596,55 @@ def replace_by_neuron(model, neuron, args, step_mode='s', T=0):
     else:
         assert False
 
-def convert_ann_to_snn(ann, neuron, args, T, fuse_flag):
-    replace_by_neuron(
-        ann,
-        neuron,
-        args,
-        "s",
-        T
-    )
-    if fuse_flag:
-        ann = fx.symbolic_trace(ann)
-        ann_fused = self.fuse(ann, fuse_flag=fuse_flag)
-        return ann_fused
-    return ann
+def test_snn(
+    model, device,
+    time, coding_type,
+    threshold_mode, threshold_level, num_thresholds,
+    neuron_name, load_name, fuse, sop, args, loader
+):
+    change_maxpool_before_relu(model)
+    replace_by_maxpool_neuron(model, time, coding_type)
+    replace_nonlinear_by_hook(model, 0.1, threshold_mode, threshold_level)
+    model = load_model_from_dict(model, load_name, device)
+
+    if threshold_mode=="var":
+        if neuron_name.startswith('MTH'):
+            model = Threshold_Getter.get_scale_from_var(
+                model, T=time*(2**num_thresholds))
+        else:
+            model = Threshold_Getter.get_scale_from_var(model, T=time)
+
+    replace_by_neuron(model, neuron_name, time)
+    if fuse:
+        model = fx.symbolic_trace(model)
+        model = self.fuse(model, fuse_flag=fuse)
+
+    model.coding_type = coding_type
+    model.T = time
+
+    model.init_forward = model.forward
+    if coding_type=='rate':
+        model.forward = MethodType(forward_snn_rate_s, model)
+    elif coding_type=='leaky_rate':
+        model.tau = args.tau
+        model.forward = MethodType(forward_snn_leaky_rate_s, model)
+    elif coding_type=='diff_rate':
+        model.forward = MethodType(forward_snn_diff_rate_s, model)
+    elif coding_type=='diff_leaky_rate':
+        model.tau = args.tau
+        model.forward = MethodType(forward_snn_diff_leaky_rate_s, model)
+    else:
+        assert False
+
+    print(model)
+    model.to(device)
+    model.eval()
+
+    if args.sop:
+        val = val_snn_classfication_with_sop
+    else:
+        val = val_snn_classfication
+    val(model, loader, device, args)
 
 def main():
     args, device = get_args()
@@ -690,36 +694,12 @@ def main():
         print("Successfully Save Model with Threshold")
     elif args.mode == 'test_snn':
         assert args.time > 0
-        change_maxpool_before_relu(model)
-        replace_by_maxpool_neuron(
-            model,
-            args.time,
-            args.coding_type
+        test_snn(
+            model, device,
+            args.time, args.coding_type,
+            args.threshold_mode, args.threshold_level, args.num_thresholds,
+            args.neuron_name, args.load_name, args.fuse, args.sop, args, l_te
         )
-        model = replace_nonlinear_by_hook(
-            model, 0.1, args.threshold_mode, args.threshold_level
-        )
-        model = load_model_from_dict(model, args.load_name, device)
-        if args.threshold_mode=="var":
-            if args.neuron_name.startswith('MTH'):
-                model = Threshold_Getter.get_scale_from_var(
-                    model, T=args.time*(2**args.num_thresholds))
-            else:
-                model = Threshold_Getter.get_scale_from_var(model, T=args.time)
-
-        model = convert_ann_to_snn(
-            model, args.neuron_name, args, args.time, args.fuse
-        )
-
-        forward_replace(args, model)
-        model.to(device)
-        model.eval()
-
-        if args.sop:
-            val = val_snn_classfication_with_sop
-        else:
-            val = val_snn_classfication
-        val(model, l_te, device, args)
     else:
         assert False
     if args.distributed:

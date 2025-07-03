@@ -43,9 +43,6 @@ def load_model(model_path, mode_fx, code_path=None,model=None):
         assert model
         return Threshold_Getter.load_module_model(model=model, model_path=model_path+'.pth')
 
-
-
-
 class Threshold_Getter(Module):
     def __init__(
         self,
@@ -74,7 +71,7 @@ class Threshold_Getter(Module):
             ).to(self.device)
         else:
             model.eval()
-            model_with_hook = replace_nonlinear_by_hook(
+            replace_nonlinear_by_hook(
                 model,
                 self.momentum,
                 self.mode,
@@ -82,8 +79,8 @@ class Threshold_Getter(Module):
             ).to(self.device)
         for _, (xs, _) in enumerate(tqdm(self.loader)):
             xs = xs.to(self.device)
-            model_with_hook(xs)
-        return model_with_hook
+            model(xs)
+        return model
 
     @staticmethod
     def get_scale_from_var(model, T = 64):
